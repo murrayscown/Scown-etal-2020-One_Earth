@@ -1,0 +1,2753 @@
+---
+title: "Scown et al. data analysis"
+author: "Murray Scown"
+date: "19 June 2020"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+#Introduction
+Here we summarise and map the NUTS3 CAP subsidies data curated by farmsubsidy.org, processed by Edmund Lehsten in Python and provided on 30/4/2020. The raw data was downloaded from farmsubsidy.org and all processing, alignment with CAP schemes, and conversion of postal codes to NUTS3 is documented in Nicholas et al., co-submitted to Patterns. This document is for the creation of the final database used for mapping and analysis.
+
+```{r setup}
+
+library(raster)
+library(rgdal)
+library(sp)
+library(dplyr)
+library(sf)
+library(ggplot2)
+library(viridis)
+library(eurostat)
+library(reshape)
+library(plotly)
+library(stats)
+
+setwd("###SET")
+
+outwd <- ###SET
+
+opar <- par()
+
+```
+
+
+#NUTS regions
+
+```{r import.nuts}
+
+nuts <- shapefile(paste(getwd(), "Shapefiles/NUTS_RG_01M_2013_3035_LEVL_3.shp", sep="/"))
+
+head(nuts@data)
+
+nuts.mg <- shapefile(paste(getwd(), "Shapefiles/NUTS_RG_01M_2013_3035_LEVL_3_merged.shp", sep="/"))
+
+head(nuts.mg@data)
+
+```
+
+#CAP subsidies
+Years:
+2014 - DK
+2015 - all others
+2016 - BG, SE
+
+NUTS3:
+The following countries do not provide postal code data with subsidies data, so all payments are allocated to the country level:
+BG, CZ, EE, EL, IE, LT, LU, LV, RO, SI
+
+Currencies:
+All final data are in euros, we adjust using PPP.
+
+We also categorise schemes as either social, environmental, or mixed.
+
+```{r scheme.categories}
+
+scheme.codes <- read.csv2("Env-Soc-Schemes_20200518.csv", head=T)
+
+scheme.codes
+
+(env.schemes <- as.character(scheme.codes[scheme.codes$new_cat=='Environmental','code']))
+(inc.schemes <- as.character(scheme.codes[scheme.codes$new_cat=='Income','code']))
+(oth.schemes <- as.character(scheme.codes[scheme.codes$new_cat=='Other','code']))
+
+(PI.schemes <- scheme.codes$code[1:27])
+(PII.schemes <- scheme.codes$code[28:102])
+
+```
+
+##2014
+
+```{r 2014.subsidies}
+
+subs.2014.raw <- read.csv("outputcondensed_2014.csv", head=T)
+
+#take DK only and translated schemes
+head(subs.2014.raw[,grep('DK', names(subs.2014.raw))])
+
+subs.2014 <- subs.2014.raw[-grep('notTranslated', subs.2014.raw$translated_scheme),c(1,grep('DK', names(subs.2014.raw)))]
+head(subs.2014)
+nrow(subs.2014)
+
+#transpose
+subs.2014.t <- as.data.frame(matrix(nrow=ncol(subs.2014)-1, ncol=nrow(subs.2014)+2))
+subs.2014.t[,1] <- names(subs.2014)[-1]
+subs.2014.t[,-c(1,ncol(subs.2014.t))] <- t(subs.2014[,-1])
+names(subs.2014.t) <- c('NUTS_ID', as.character(subs.2014$translated_scheme), 'Other')
+head(subs.2014.t)
+
+#sum other schemes
+tail(subs.2014.raw)
+
+subs.2014.t$Other <- colSums(subs.2014.raw[grep('notTranslated', subs.2014.raw$translated_scheme),grep('DK', names(subs.2014.raw))], na.rm=T)
+
+subs.2014.t
+
+#sum all income support, environmental, and other schemes
+names(subs.2014.t[,names(subs.2014.t) %in% env.schemes])
+env.schemes
+
+names(subs.2014.t[,names(subs.2014.t) %in% inc.schemes])
+inc.schemes
+
+names(subs.2014.t[,names(subs.2014.t) %in% oth.schemes])
+oth.schemes
+
+subs.2014.t$Env_tot <- rowSums(subs.2014.t[,names(subs.2014.t) %in% env.schemes], na.rm=T)
+subs.2014.t$Inc_tot <- rowSums(subs.2014.t[,names(subs.2014.t) %in% inc.schemes], na.rm=T)
+subs.2014.t$Oth_tot <- rowSums(subs.2014.t[,names(subs.2014.t) %in% oth.schemes], na.rm=T)
+
+#sum total
+names(subs.2014.t)
+names(subs.2014.t[,c("NUTS_ID", "National", "Env_tot", "Inc_tot", "Oth_tot")])
+subs.2014.t$total <- rowSums(subs.2014.t[,!names(subs.2014.t) %in% c("NUTS_ID", "National", "Env_tot", "Inc_tot", "Oth_tot")], na.rm=T) #exclude subtotals and "National" column
+
+#Check totals
+colSums(subs.2014.t[,!names(subs.2014.t) %in% c("NUTS_ID", "National", "Env_tot", "Inc_tot", "Oth_tot")], na.rm=T)
+sum(subs.2014.t[,c("Env_tot", "Inc_tot", "Oth_tot", "Other")])
+
+sum(subs.2014.t$Other) / sum(subs.2014.t$total)#4% of subsidies not matched to a scheme for 2014 for DK
+
+summary(subs.2014.t)
+
+```
+
+##2015
+
+```{r 2015.subsidies}
+
+subs.2015.raw <- read.csv("outputcondensed_2015.csv", head=T)
+
+#take only translated schemes
+subs.2015 <- subs.2015.raw[-grep('notTranslated', subs.2015.raw$translated_scheme),]
+head(subs.2015)
+head(subs.2015)[,1:3]
+nrow(subs.2015)
+
+#transpose
+subs.2015.t <- as.data.frame(matrix(nrow=ncol(subs.2015)-1, ncol=nrow(subs.2015)+2))
+subs.2015.t[,1] <- names(subs.2015)[-1]
+subs.2015.t[,-c(1,ncol(subs.2015.t))] <- t(subs.2015[,-1])
+names(subs.2015.t) <- c('NUTS_ID', as.character(subs.2015$translated_scheme), 'Other')
+head(subs.2015.t)
+
+#need to correct German NUTS IDs with 'X.' at start and '.' at end (these come in because of some ' in csv)
+subs.2015.t[grep('X', subs.2015.t$NUTS_ID),'NUTS_ID']
+
+subs.2015.t[grep('X', subs.2015.t$NUTS_ID),'NUTS_ID'] <- substr(subs.2015.t[grep('X', subs.2015.t$NUTS_ID),'NUTS_ID'],3,7) #keep only 3rd to 7th character
+
+subs.2015.t[grep('X', subs.2015.t$NUTS_ID),'NUTS_ID'] #should be empty
+
+#LU - need to add all to LU000 (include LUNaN)
+nrow(subs.2015.t)
+subs.2015.t[subs.2015.t$NUTS_ID=='LU000',]
+subs.2015.t[subs.2015.t$NUTS_ID=='LUNaN',]
+subs.2015.t[subs.2015.t$NUTS_ID %in% c('LU000', 'LUNaN'),]
+
+subs.2015.t[subs.2015.t$NUTS_ID=='LU000',-1] <- colSums(subs.2015.t[subs.2015.t$NUTS_ID %in% c('LU000', 'LUNaN'),-1], na.rm=T)
+
+subs.2015.t <- subs.2015.t[!subs.2015.t$NUTS_ID=='LUNaN',]
+nrow(subs.2015.t) #should now be 1043
+
+#sum other schemes
+tail(subs.2015.raw)[,1:3]
+
+subs.2015.t$Other <- colSums(subs.2015.raw[grep('notTranslated', subs.2015.raw$translated_scheme),-c(1,grep('LUNaN', names(subs.2015.raw)))], na.rm=T)
+
+tail(subs.2015.t)
+
+#change ltNaN to LTNaN
+subs.2015.t[subs.2015.t$NUTS_ID == 'ltNaN','NUTS_ID'] <- 'LTNaN'
+
+#sum all social, environmental, and mixed schemes
+names(subs.2015.t[,names(subs.2015.t) %in% env.schemes])
+env.schemes
+
+names(subs.2015.t[,names(subs.2015.t) %in% inc.schemes])
+inc.schemes
+
+names(subs.2015.t[,names(subs.2015.t) %in% oth.schemes])
+oth.schemes
+
+subs.2015.t$Env_tot <- rowSums(subs.2015.t[,names(subs.2015.t) %in% env.schemes], na.rm=T)
+subs.2015.t$Inc_tot <- rowSums(subs.2015.t[,names(subs.2015.t) %in% inc.schemes], na.rm=T)
+subs.2015.t$Oth_tot <- rowSums(subs.2015.t[,names(subs.2015.t) %in% oth.schemes], na.rm=T)
+
+#sum total
+names(subs.2015.t)
+names(subs.2015.t[,c("NUTS_ID", "National", "Env_tot", "Inc_tot", "Oth_tot")])
+subs.2015.t$total <- rowSums(subs.2015.t[,!names(subs.2015.t) %in% c("NUTS_ID", "National", "Env_tot", "Inc_tot", "Oth_tot")], na.rm=T) #exclude subtotals and "National" column
+
+#Check totals
+colSums(subs.2015.t[,!names(subs.2015.t) %in% c("NUTS_ID", "National", "Env_tot", "Inc_tot", "Oth_tot")], na.rm=T)
+sum(subs.2015.t[,c("Env_tot", "Inc_tot", "Oth_tot", "Other")])
+sum(subs.2015.t$total)
+
+
+
+sum(subs.2015.raw[,-1], na.rm = T)
+sum(subs.2015.t[,2:102], na.rm = T)
+sum(subs.2015.t[,102:105], na.rm = T) + sum(subs.2015.t$National, na.rm=T)
+sum(subs.2015.t$total) + sum(subs.2015.t$National, na.rm=T)
+
+sum(subs.2015.t$Other) / sum(subs.2015.t$total)#10% of subsidies not matched to a scheme for 2015
+
+summary(subs.2015.t)
+
+```
+
+##2016
+
+```{r 2016.subsidies}
+
+subs.2016.raw <- read.csv("outputcondensed_2016.csv", head=T)
+
+#take only and translated schemes
+subs.2016 <- subs.2016.raw[-grep('notTranslated', subs.2016.raw$translated_scheme),]
+head(subs.2016)
+head(subs.2016)[,1:3]
+nrow(subs.2016)
+
+#transpose
+subs.2016.t <- as.data.frame(matrix(nrow=ncol(subs.2016)-1, ncol=nrow(subs.2016)+2))
+subs.2016.t[,1] <- names(subs.2016)[-1]
+subs.2016.t[,-c(1,ncol(subs.2016.t))] <- t(subs.2016[,-1])
+names(subs.2016.t) <- c('NUTS_ID', as.character(subs.2016$translated_scheme), 'Other')
+head(subs.2016.t)
+
+#sum other schemes
+tail(subs.2016.raw)
+
+subs.2016.t$Other <- colSums(subs.2016.raw[grep('notTranslated', subs.2016.raw$translated_scheme),-1], na.rm=T)
+
+subs.2016.t
+
+#sum all social, environmental, and mixed schemes
+names(subs.2016.t[,names(subs.2016.t) %in% env.schemes])
+env.schemes
+
+names(subs.2016.t[,names(subs.2016.t) %in% inc.schemes])
+inc.schemes
+
+names(subs.2016.t[,names(subs.2016.t) %in% oth.schemes])
+oth.schemes
+
+subs.2016.t$Env_tot <- rowSums(subs.2016.t[,names(subs.2016.t) %in% env.schemes], na.rm=T)
+subs.2016.t$Inc_tot <- rowSums(subs.2016.t[,names(subs.2016.t) %in% inc.schemes], na.rm=T)
+subs.2016.t$Oth_tot <- rowSums(subs.2016.t[,names(subs.2016.t) %in% oth.schemes], na.rm=T)
+
+#sum total
+names(subs.2016.t)
+names(subs.2016.t[,c("NUTS_ID", "Env_tot", "Inc_tot", "Oth_tot")])
+subs.2016.t$total <- rowSums(subs.2016.t[,!names(subs.2016.t) %in% c("NUTS_ID", "Env_tot", "Inc_tot", "Oth_tot")], na.rm=T) #exclude subtotals
+
+#Check totals
+colSums(subs.2016.t[,!names(subs.2016.t) %in% c("NUTS_ID", "Env_tot", "Inc_tot", "Oth_tot")], na.rm=T)
+sum(subs.2016.t[,c("Env_tot", "Inc_tot", "Oth_tot", "Other")])
+sum(subs.2016.t$total)
+sum(subs.2016.t$Other) / sum(subs.2016.t$total)
+
+summary(subs.2016.t)
+
+```
+
+##Combine years
+
+```{r combine.years}
+
+#merge years
+subs.all.years <- bind_rows(subs.2015.t, subs.2014.t, subs.2016.t)
+#rename NaN to nan to align with NUTS IDs
+(x <- subs.all.years[grep("NaN", subs.all.years$NUTS_ID),"NUTS_ID"])
+(subs.all.years[grep("NaN", subs.all.years$NUTS_ID),"NUTS_ID"] <- paste(substr(x,1,2), "nan", sep=""))
+rm(x)
+
+#join to NUTS
+nrow(subs.all.years)
+nrow(nuts.mg@data)
+final.subs <- merge(nuts.mg@data, subs.all.years, by='NUTS_ID', all.x=T)
+
+head(final.subs)
+
+#calculate % not aligned to NUTS
+(nuts.not.aligned <- subs.all.years[!subs.all.years$NUTS_ID %in% nuts.mg@data$NUTS_ID,'NUTS_ID'])
+
+(frac.not.aligned.nuts <- sum(subs.all.years[subs.all.years$NUTS_ID %in% nuts.not.aligned,'total']) / sum(subs.all.years[,'total'])) #2% not aligned to NUTS
+
+#calculate % not aligned to scheme
+(frac.not.aligned.scheme <- sum(subs.all.years[,'Other']) / sum(subs.all.years[,'total'])) #9.5% not aligned to scheme
+
+#check effect of categories
+sum(final.subs$total, na.rm=T) / 1e9
+(env.cat.measures <- sum(final.subs[,scheme.codes[scheme.codes$new_cat=="Environmental","code"]], na.rm=T) / 1e9)
+
+env.cat.measures / (sum(final.subs$total, na.rm=T) / 1e9)
+
+#PII environmental
+env.cat.measures - (sum(final.subs[,"II.4"], na.rm=T) / 1e9)
+
+```
+
+##PPP conversion
+We use the Eurostat Comparative price levels of final consumption by private households including indirect taxes (EU28 = 100) (table TEC00120) for respective years 2014-2016 to rescale subsidies in each country. Downloaded on 16/08/2019.
+
+```{r ppp.conversion}
+
+ppp <- read.csv("estat_tec00120_price_index.csv", head=T)
+ppp
+#clean up country codes
+(ppp[,1] <- substr(ppp[,1],17,18))
+ppp[16:17,1] <- c("EU27", "EU28")
+names(ppp)[1] <- "NUTS0"
+ppp
+
+#make corrections into new df
+final.subs.ppp <- final.subs
+
+names(final.subs.ppp)
+
+##2014
+for(e in 5:ncol(final.subs.ppp)) {
+  final.subs.ppp[grep('DK', final.subs.ppp$NUTS_ID),e] <- final.subs[grep('DK', final.subs$NUTS_ID),e] * (100 / ppp[ppp$NUTS0=='DK',"X2014"])
+}
+#check
+final.subs.ppp[grep('DK', final.subs.ppp$NUTS_ID),3:10]
+final.subs[grep('DK', final.subs.ppp$NUTS_ID),3:10]
+
+##2015
+for(e in unique(substr(subs.2015.t$NUTS_ID,1,2))[-c(10,24,26)]) { #exclude 'US', 'GR', and 'TH'
+  for(f in 5:ncol(final.subs.ppp)) {
+    final.subs.ppp[grep(e, final.subs.ppp$NUTS_ID),f] <- final.subs[grep(e, final.subs$NUTS_ID),f] * (100 / ppp[ppp$NUTS0==e,"X2015"])
+  }
+}
+final.subs.ppp[grep('SK', final.subs.ppp$NUTS_ID),3:10]
+final.subs[grep('SK', final.subs.ppp$NUTS_ID),3:10]
+
+##2016
+for(e in c("BG", "CZ", "SE")) {
+  for(f in 5:ncol(final.subs.ppp)) {
+    final.subs.ppp[grep(e, final.subs.ppp$NUTS_ID),f] <- final.subs[grep(e, final.subs$NUTS_ID),f] * (100 / ppp[ppp$NUTS0==e,"X2016"])
+  }
+}
+final.subs.ppp[grep('SE', final.subs.ppp$NUTS_ID),3:10]
+final.subs[grep('SE', final.subs.ppp$NUTS_ID),3:10]
+
+#manual for Greece
+for(e in 5:ncol(final.subs.ppp)) {
+  final.subs.ppp[grep('GR', final.subs.ppp$NUTS_ID),e] <- final.subs[grep('GR', final.subs$NUTS_ID),e] * (100 / ppp[ppp$NUTS0=='EL',"X2015"])
+}
+#check
+final.subs.ppp[grep('GR', final.subs.ppp$NUTS_ID),3:10]
+final.subs[grep('GR', final.subs.ppp$NUTS_ID),3:10]
+
+```
+
+#Socio-economic data
+We will use a number of socio-economic indicators from Eurostat in conjunction with the subsidies data. These include:
+
+NUTS3 area
+NUTS3 urban-rural typology
+NUTS2 farm sizes
+NUTS2 agricultural factor income
+NUTS2 annual work unit
+
+We import and process NUTS at all levels because we will analyse at NUTS3, NUTS2, and some NUTS0.
+
+NOTE: UPDATES TO EUROSTAT DATA MAY RESULT IN SMALL CHANGES FROM INITIAL DATE OF CODE RUN.
+
+##Population
+Downloaded from Eurostat 2020/05/18.
+- table: demo_r_pjanaggr3
+- AGE = TOTAL, SEX = T, TIME = 2015, UNIT = NR (number)
+
+```{r population}
+
+var.of.interest <- "demo_r_pjanaggr3"
+main.indic <- "TOTAL"
+other.indic <- "T"
+unit.of.interest <- "NR" 
+var.label <- label_eurostat_tables(paste(var.of.interest), lang = "en")
+
+clean_eurostat_cache()
+
+## Download attribute data from Eurostat
+sp.data <- eurostat::get_eurostat(paste(var.of.interest), time_format = "raw", stringsAsFactors = FALSE)
+
+## Filter data
+sp.data.sub <- sp.data %>%
+  dplyr::filter(time == 2015) %>%
+  dplyr::filter(age == paste(main.indic)) %>% 
+  dplyr::filter(sex == paste(other.indic)) %>%
+  dplyr::filter(unit == paste(unit.of.interest))
+head(sp.data.sub)
+
+pop.tot <- sp.data.sub[,c(4,6)]
+names(pop.tot) <- c("NUTS_ID", "pop_tot")
+head(pop.tot)
+nrow(pop.tot)
+
+```
+
+##Population density
+Downloaded from Eurostat 2020/05/18.
+- table: demo_r_d3dens
+- TIME = 2015, UNIT = HAB_KM2 (inhabitants per km2)
+
+```{r pop.density}
+
+var.of.interest <- "demo_r_d3dens"
+unit.of.interest <- "HAB_KM2" 
+var.label <- label_eurostat_tables(paste(var.of.interest), lang = "en")
+
+clean_eurostat_cache()
+
+## Download attribute data from Eurostat
+sp.data <- eurostat::get_eurostat(paste(var.of.interest), time_format = "raw", stringsAsFactors = FALSE)
+
+## Filter data
+sp.data.sub <- sp.data %>%
+  dplyr::filter(time == 2015) %>%
+  dplyr::filter(unit == paste(unit.of.interest))
+head(sp.data.sub)
+
+pop.dens <- sp.data.sub[,c(2,4)]
+names(pop.dens) <- c("NUTS_ID", "pop_dens")
+head(pop.dens)
+nrow(pop.dens)
+
+```
+
+##NUTS3 Area
+Downloaded from Eurostat 2020/05/18.
+- table: demo_r_d3area
+- LANDUSE = L0008 (total land area), TIME = 2015, UNIT = KM2 (square kilometre)
+
+```{r land.area}
+
+var.of.interest <- "demo_r_d3area"
+main.indic <- "L0008"
+unit.of.interest <- "KM2" 
+var.label <- label_eurostat_tables(paste(var.of.interest), lang = "en")
+
+clean_eurostat_cache()
+
+## Download attribute data from Eurostat
+sp.data <- eurostat::get_eurostat(paste(var.of.interest), time_format = "raw", stringsAsFactors = FALSE)
+
+## Filter data
+sp.data.sub <- sp.data %>%
+  dplyr::filter(time == 2015) %>%
+  dplyr::filter(landuse == paste(main.indic)) %>% 
+  dplyr::filter(unit == paste(unit.of.interest))
+head(sp.data.sub)
+
+land.area <- sp.data.sub[,c(3,5)]
+names(land.area) <- c("NUTS_ID", "areakm2")
+head(land.area)
+nrow(land.area)
+
+```
+
+##Urban-Rural typology
+The urban-rural typology for 2013 NUTS3 regions was downloaded from https://ec.europa.eu/eurostat/web/rural-development/methodology on 17/08/2019.
+
+The typology is as follows:
+1 = predominantly urban
+2 = intermediate
+3 = predominantly rural
+0 = no data
+
+```{r urban.rural}
+
+urb.rur <- read.csv('Urban-rural-typology-NUTS-2013.csv', head=T)
+
+head(urb.rur)
+nrow(urb.rur)
+
+urb.rur$urb_rur_typ <- NA
+urb.rur[urb.rur$Urban.rural == 1,'urb_rur_typ'] <- 'pred. urban'
+urb.rur[urb.rur$Urban.rural == 2,'urb_rur_typ'] <- 'intermediate'
+urb.rur[urb.rur$Urban.rural == 3,'urb_rur_typ'] <- 'pred. rural'
+urb.rur[urb.rur$Urban.rural == 0,'urb_rur_typ'] <- 'no data'
+
+head(urb.rur)
+
+```
+
+##Farm tenure
+Downloaded from Eurostat 2020/05/18. Latest year available is 2013. NUTS2 available only.
+- table: ef_mptenure
+
+###Total UAA
+First, we calculate total utilised agricultural area by NUTS2
+- AGRAREA = TOTAL, INDIC_EF = AGRAREA_HA (ha: Utilised agricultural area)
+
+```{r total.uaa}
+
+var.of.interest <- "ef_mptenure"
+agr.indic <- "AGRAREA_HA" #utilised ag area
+list.of.prod <- "TOTAL" #total area
+var.label <- label_eurostat_tables(paste(var.of.interest), lang = "en")
+
+clean_eurostat_cache()
+
+## Download attribute data from Eurostat
+sp.data <- eurostat::get_eurostat(paste(var.of.interest), time_format = "raw", stringsAsFactors = FALSE)
+
+## Filter data
+sp.data.sub <- sp.data %>%
+  dplyr::filter(time == 2013) %>%
+  dplyr::filter(agrarea == paste(list.of.prod)) %>% 
+  dplyr::filter(indic_ef == paste(agr.indic))
+head(sp.data.sub)
+
+uaa.tot <- sp.data.sub[,c(3,5)]
+names(uaa.tot) <- c("NUTS_ID", "uaa_tot")
+head(uaa.tot)
+nrow(uaa.tot)
+summary(uaa.tot)
+
+```
+
+###Type of tenure
+Next, we calculate the area farmed by owner:
+- AGRAREA = TOTAL, INDIC_EF = A_3_1_1_HA (ha: Farming by owner: Agricultural area)
+
+Farmed by tenant:
+- AGRAREA = TOTAL, INDIC_EF = A_3_1_2_HA (ha: Farming by tenant: Agricultural area)
+
+Or farmed by other modes:
+- AGRAREA = TOTAL, INDIC_EF = A_3_1_3_HA (ha: Shared farming or other modes: Agricultural area)
+
+```{r tenure.uaa}
+
+###owner
+agr.indic <- "A_3_1_1_HA"
+
+## Filter data
+sp.data.sub <- sp.data %>%
+  dplyr::filter(time == 2013) %>%
+  dplyr::filter(agrarea == paste(list.of.prod)) %>% 
+  dplyr::filter(indic_ef == paste(agr.indic))
+head(sp.data.sub)
+
+uaa.tenure <- sp.data.sub[,c(3,5)]
+names(uaa.tenure) <- c("NUTS_ID", "owner_ha")
+head(uaa.tenure)
+nrow(uaa.tenure)
+summary(uaa.tenure)
+
+###tenant
+agr.indic <- "A_3_1_2_HA"
+
+## Filter data
+sp.data.sub <- sp.data %>%
+  dplyr::filter(time == 2013) %>%
+  dplyr::filter(agrarea == paste(list.of.prod)) %>% 
+  dplyr::filter(indic_ef == paste(agr.indic))
+head(sp.data.sub)
+nrow(sp.data.sub)
+
+uaa.tenure <- merge(uaa.tenure, sp.data.sub[,c(3,5)], all=T, by.x='NUTS_ID', by.y='geo')
+names(uaa.tenure)[3] <- "tenant_ha"
+head(uaa.tenure)
+nrow(uaa.tenure)
+summary(uaa.tenure)
+
+###other modes
+agr.indic <- "A_3_1_3_HA"
+
+## Filter data
+sp.data.sub <- sp.data %>%
+  dplyr::filter(time == 2013) %>%
+  dplyr::filter(agrarea == paste(list.of.prod)) %>% 
+  dplyr::filter(indic_ef == paste(agr.indic))
+head(sp.data.sub)
+nrow(sp.data.sub)
+
+uaa.tenure <- merge(uaa.tenure, sp.data.sub[,c(3,5)], all=T, by.x='NUTS_ID', by.y='geo')
+names(uaa.tenure)[4] <- "other_ha"
+head(uaa.tenure)
+nrow(uaa.tenure)
+summary(uaa.tenure)
+
+```
+
+##Farm size
+
+HA0	Zero ha
+HA_LT2	Less than 2 ha
+HA2-4	From 2 to 4.9 ha
+HA5-9	From 5 to 9.9 ha
+HA10-19	From 10 to 19.9 ha
+HA20-29	From 20 to 29.9 ha
+HA30-49	From 30 to 49.9 ha
+HA50-99	From 50 to 99.9 ha
+HA_GE100	100 ha or over
+
+```{r farm.size}
+
+#here we import total number of holdings and total uaa of all farm sizes
+
+###UAA
+## Filter data
+sp.data.sub <- sp.data %>%
+  dplyr::filter(time == 2013) %>%
+  dplyr::filter(indic_ef == "AGRAREA_HA")
+head(sp.data.sub)
+nrow(sp.data.sub)
+
+#recast UAA
+unique(sp.data.sub$agrarea)
+unique(sp.data.sub$indic_ef)
+
+farm.size.uaa <- cast(sp.data.sub, geo ~ agrarea, id.var = "geo")
+
+names(farm.size.uaa)
+names(farm.size.uaa) <- c('NUTS_ID', paste('uaa_ha_', names(farm.size.uaa)[-1], sep=''))
+head(farm.size.uaa)
+summary(farm.size.uaa)
+
+###holdings
+## Filter data
+sp.data.sub <- sp.data %>%
+  dplyr::filter(time == 2013) %>%
+  dplyr::filter(indic_ef == "HOLD_HOLD")
+head(sp.data.sub)
+nrow(sp.data.sub)
+
+#recast holdings
+unique(sp.data.sub$agrarea)
+unique(sp.data.sub$indic_ef)
+
+farm.size.hold <- cast(sp.data.sub, geo ~ agrarea, id.var = "geo")
+
+names(farm.size.hold)
+names(farm.size.hold) <- c('NUTS_ID', paste('no_holds_', names(farm.size.hold)[-1], sep=''))
+head(farm.size.hold)
+summary(farm.size.hold)
+
+#remove all dataframes no longer needed
+rm(sp.data)
+rm(sp.data.sub)
+
+```
+
+##Agricultural factor income per AWU
+Here we use the AFI per annual work unit calculated in the database of environmental and social indicators https://github.com/murrayscown/EU-Agricultural-Systems-Database.
+
+```{r afi.awu}
+
+d1.dbase <- shapefile(paste(getwd(), "Shapefiles/D1_database_20190130.shp", sep="/"))
+
+names(d1.dbase@data)
+
+head(d1.dbase@data[,c('NUTS_ID', 'afi_awu')])
+
+```
+
+##Eurostat agricultural income
+Here we download AFI from Eurostat (download date 2020/05/18)
+
+```{r eurostat.AFI}
+
+var.of.interest <- "agr_r_accts"
+agr.indic <- "PROD_BP"
+list.of.prod <- 26000
+unit.of.interest <- "MIO_EUR"
+
+clean_eurostat_cache()
+
+## Download attribute data from Eurostat
+sp.data <- eurostat::get_eurostat(paste(var.of.interest), time_format = "raw", stringsAsFactors = FALSE)
+
+## Get time series to be used
+year.cnt.2010 <- length(which(as.numeric(unique(sp.data$time))>= 2010))
+if (year.cnt.2010 >= 5){
+  time.of.interest <- 2010:2017 # if at least 5 years of data exist after 2010
+} else {
+  time.of.interest <- sort(as.numeric(unique(sp.data$time)), decreasing=T)[1:5]
+  time.of.interest <- sort(na.omit(time.of.interest))
+}
+
+## Filter data
+sp.data.sub <- sp.data %>%
+  dplyr::filter(time >= min(time.of.interest) & time <= max(time.of.interest), nchar(geo) <= 4) %>%
+  dplyr::filter(indic_ag == paste(agr.indic)) %>% 
+  dplyr::filter(itm_newa == paste(list.of.prod)) %>%
+  dplyr::filter(unit == paste(unit.of.interest))
+
+names(sp.data.sub)
+
+sp.data.sub <- sp.data.sub[,c(4,5,6)]
+
+## Calculate mean and median over the years 2010-2017
+head(sp.data.sub)
+sp.data.sub.mean <- sp.data.sub %>% group_by(geo) %>% summarise(factor_income_mean = mean(values,na.rm = TRUE))
+
+head(sp.data.sub.mean)
+summary(sp.data.sub.mean)
+
+ag.fact.inc <- sp.data.sub.mean
+names(ag.fact.inc)[1] <- "NUTS_ID"
+
+```
+
+Here we download the eurostat subsidies on agricltural products.
+
+```{r nuts2.eurostat.subs.on.products}
+
+var.of.interest <- "agr_r_accts"
+agr.indic <- "SUBS"
+list.of.prod <- 16000
+unit.of.interest <- "MIO_EUR"
+
+## Filter data
+sp.data.sub <- sp.data %>%
+  dplyr::filter(time >= min(time.of.interest) & time <= max(time.of.interest), nchar(geo) <= 4) %>%
+  dplyr::filter(indic_ag == paste(agr.indic)) %>% 
+  dplyr::filter(itm_newa == paste(list.of.prod)) %>%
+  dplyr::filter(unit == paste(unit.of.interest))
+
+names(sp.data.sub)
+
+sp.data.sub <- sp.data.sub[,c(4,5,6)]
+
+## Calculate mean and median over the years 2010-2017
+head(sp.data.sub)
+sp.data.sub.mean <- sp.data.sub %>% group_by(geo) %>% summarise(subs_on_prod_mean = mean(values,na.rm = TRUE))
+
+head(sp.data.sub.mean)
+summary(sp.data.sub.mean)
+
+subs.on.prod <- sp.data.sub.mean
+names(subs.on.prod)[1] <- "NUTS_ID"
+
+```
+
+Here we download the eurostat other subsidies on production.
+
+```{r nuts2.eurostat.all.other.subs}
+
+var.of.interest <- "agr_r_accts"
+agr.indic <- "PROD_BP"
+list.of.prod <- 25000
+unit.of.interest <- "MIO_EUR"
+
+## Filter data
+sp.data.sub <- sp.data %>%
+  dplyr::filter(time >= min(time.of.interest) & time <= max(time.of.interest), nchar(geo) <= 4) %>%
+  dplyr::filter(indic_ag == paste(agr.indic)) %>% 
+  dplyr::filter(itm_newa == paste(list.of.prod)) %>%
+  dplyr::filter(unit == paste(unit.of.interest))
+
+names(sp.data.sub)
+
+sp.data.sub <- sp.data.sub[,c(4,5,6)]
+
+## Calculate mean and median over the years 2010-2017
+head(sp.data.sub)
+sp.data.sub.mean <- sp.data.sub %>% group_by(geo) %>% summarise(other_subs_mean = mean(values,na.rm = TRUE))
+
+head(sp.data.sub.mean)
+summary(sp.data.sub.mean)
+
+other.subs <- sp.data.sub.mean
+names(other.subs)[1] <- "NUTS_ID"
+
+```
+
+
+```{r merge.eurostat.income.subs}
+
+eurostat.income.subs <- merge(ag.fact.inc, merge(subs.on.prod, other.subs, all=T, by='NUTS_ID'), all=T, by='NUTS_ID', sort=F)
+
+head(eurostat.income.subs)
+summary(eurostat.income.subs)
+
+sum(eurostat.income.subs[,2], na.rm=T)
+sum(eurostat.income.subs[,3:4], na.rm=T)
+
+```
+
+##Eurostat annual work unit
+
+```{r eurostat.sole.holders}
+
+var.of.interest <- "ef_olfreg"
+
+clean_eurostat_cache()
+
+## Download attribute data from Eurostat
+sp.data <- eurostat::get_eurostat(paste(var.of.interest), time_format = "raw", stringsAsFactors = FALSE)
+
+## Get time series to be used
+year.cnt.2010 <- length(which(as.numeric(unique(sp.data$time))>= 2010))
+if (year.cnt.2010 >= 5){
+  time.of.interest <- 2010:2017 # if at least 5 years of data exist after 2010
+} else {
+  time.of.interest <- sort(as.numeric(unique(sp.data$time)), decreasing=T)[1:5]
+  time.of.interest <- sort(na.omit(time.of.interest))
+}
+
+## Filter data - SOLE HOLDERS
+sp.data.sub <- sp.data %>%
+  dplyr::filter(time >= min(time.of.interest) & time <= max(time.of.interest), nchar(geo) <= 4) %>%
+  dplyr::filter(indic_ef == "LFH_AWU")
+
+names(sp.data.sub)
+
+sp.data.sub <- sp.data.sub[,c(2,3,4)]
+
+## Calculate mean and median over the years 2010-2017
+head(sp.data.sub)
+sp.data.sub.mean <- sp.data.sub %>% group_by(geo) %>% summarise(sole_holders_mean = mean(values,na.rm = TRUE))
+
+head(sp.data.sub.mean)
+summary(sp.data.sub.mean)
+
+awu.sole.hold <- sp.data.sub.mean
+names(awu.sole.hold)[1] <- "NUTS_ID"
+
+```
+
+
+```{r eurostat.sole.holders.fam}
+
+## Filter data
+sp.data.sub <- sp.data %>%
+  dplyr::filter(time >= min(time.of.interest) & time <= max(time.of.interest), nchar(geo) <= 4) %>%
+  dplyr::filter(indic_ef == "LFRMF_AWU")
+
+names(sp.data.sub)
+
+sp.data.sub <- sp.data.sub[,c(2,3,4)]
+
+## Calculate mean and median over the years 2010-2017
+head(sp.data.sub)
+sp.data.sub.mean <- sp.data.sub %>% group_by(geo) %>% summarise(sole_holders_fam_mean = mean(values,na.rm = TRUE))
+
+head(sp.data.sub.mean)
+summary(sp.data.sub.mean)
+
+awu.sole.hold.fam <- sp.data.sub.mean
+names(awu.sole.hold.fam)[1] <- "NUTS_ID"
+
+```
+
+
+```{r eurostat.family.labor.force}
+
+## Filter data
+sp.data.sub <- sp.data %>%
+  dplyr::filter(time >= min(time.of.interest) & time <= max(time.of.interest), nchar(geo) <= 4) %>%
+  dplyr::filter(indic_ef == "LFRF_AWU")
+
+names(sp.data.sub)
+
+sp.data.sub <- sp.data.sub[,c(2,3,4)]
+
+## Calculate mean and median over the years 2010-2017
+head(sp.data.sub)
+sp.data.sub.mean <- sp.data.sub %>% group_by(geo) %>% summarise(fam_lab_force_mean = mean(values,na.rm = TRUE))
+
+head(sp.data.sub.mean)
+summary(sp.data.sub.mean)
+
+awu.fam.lab.for <- sp.data.sub.mean
+names(awu.fam.lab.for)[1] <- "NUTS_ID"
+
+```
+
+
+```{r eurostat.regular.labor.force}
+
+## Filter data
+sp.data.sub <- sp.data %>%
+  dplyr::filter(time >= min(time.of.interest) & time <= max(time.of.interest), nchar(geo) <= 4) %>%
+  dplyr::filter(indic_ef == "LFR_AWU")
+
+names(sp.data.sub)
+
+sp.data.sub <- sp.data.sub[,c(2,3,4)]
+
+## Calculate mean and median over the years 2010-2017
+head(sp.data.sub)
+sp.data.sub.mean <- sp.data.sub %>% group_by(geo) %>% summarise(reg_lab_force_mean = mean(values,na.rm = TRUE))
+
+head(sp.data.sub.mean)
+summary(sp.data.sub.mean)
+
+awu.reg.lab.for <- sp.data.sub.mean
+names(awu.reg.lab.for)[1] <- "NUTS_ID"
+
+```
+
+
+```{r eurostat.total.labor.force}
+
+## Filter data
+sp.data.sub <- sp.data %>%
+  dplyr::filter(time >= min(time.of.interest) & time <= max(time.of.interest), nchar(geo) <= 4) %>%
+  dplyr::filter(indic_ef == "LFD_AWU")
+
+names(sp.data.sub)
+
+sp.data.sub <- sp.data.sub[,c(2,3,4)]
+
+## Calculate mean and median over the years 2010-2017
+head(sp.data.sub)
+sp.data.sub.mean <- sp.data.sub %>% group_by(geo) %>% summarise(tot_lab_force_mean = mean(values,na.rm = TRUE))
+
+head(sp.data.sub.mean)
+summary(sp.data.sub.mean)
+
+awu.tot.lab.for <- sp.data.sub.mean
+names(awu.tot.lab.for)[1] <- "NUTS_ID"
+
+```
+
+
+```{r eurostat.awu}
+
+awu.all <- merge(awu.sole.hold, 
+            merge(awu.sole.hold.fam, 
+             merge(awu.reg.lab.for,
+              merge(awu.fam.lab.for, 
+                     awu.tot.lab.for, all=T), all=T), all=T), all=T, sort=F)
+
+head(awu.all)
+
+sum(awu.all$sole_holders_mean)
+sum(awu.all$sole_holders_fam_mean)
+sum(awu.all$reg_lab_force_mean)
+sum(awu.all$fam_lab_force_mean)
+sum(awu.all$tot_lab_force_mean)
+
+#remove spatial data
+rm(sp.data)
+rm(sp.data.sub)
+
+```
+
+#Marginal areas
+We will also analyse the fraction of payments going to marginal agricultural areas. To do this, we use the COMBINED SUITABILITY OF CURRENTLY AVAILABLE LAND FOR PASTURE AND RAINFED CROPS (HIGH INPUT LEVEL) (FGGD) from http://www.fao.org/geonetwork/srv/en/main.home. 
+
+NUTS3 shapefiles were converted to a 1km grid in ArcGIS using version EPSG:3857 (WGS84 Web Mercator Auxiliary Sphere, coordinates in meters). This version was chosen to avoid datum conflict with WGS84 FAO grid and to have a coordinate system in meters. Cell allocation was based on MAXIMUM COMBINED AREA.
+
+The ag suitability raster was also resampled in ArcGIS to align with the NUTS3 grid at the same extent and resolution. The index ranges from 0 to 6 and indicates the following:
+
+0: land not suited for pasture or rainfed crops (PSI = 0 and CSI < 20)
+1: land very poorly suited for pasture and at best poorly suited for rainfed crops (PSI: 1-10 and CSI < 20)
+2: land poorly suited for pasture and at best poorly suited for rainfed crops (PSI: 10-20 and CSI < 20)
+3: land suited for pasture and at best poorly suited for rainfed crops (PSI > 20 and CSI < 20)
+4: land suited for rainfed crops and pasture possible (CSI: 20-50 and PSI > 0)
+5: land well suited for rainfed crops and pasture possible (CSI: 50-80 and PSI > 0)
+6: prime land for rainfed crops and pasture possible (CSI > 80 and PSI > 0)
+
+Finally, the spatial average of the index was calculated within each NUTS3 region and country for those whose subsidies data was not disaggregated to NUTS3.
+
+```{r import.ag.suit}
+
+#this is ag suitability averaged by NUTS3
+ag.suit <- read.csv("nuts3_mean_ag_suit.csv", head=T)
+
+#this is ag suitability averaged by NUTS3 and merged countries
+ag.suit.mg <- read.csv("nuts3_merged_mean_ag_suit.csv", head=T)
+
+head(ag.suit)
+head(ag.suit.mg)
+
+#convert AREA from factor to numeric
+ag.suit.mg$AREA <- as.numeric(gsub(",", "", ag.suit.mg$AREA))
+names(ag.suit.mg)[7] <- 'mn_ag_suit'
+
+summary(ag.suit.mg)
+
+```
+
+#Merge and finalise
+
+```{r merge.data}
+
+#merge all NUTS socio-economic and marginal areas dataframes
+#NUTS3
+names(pop.tot)
+names(pop.dens)
+names(land.area)
+names(urb.rur)
+names(ag.suit)
+names(ag.suit)[7] <- 'mn_ag_suit'
+
+nrow(pop.tot)
+nrow(pop.dens)
+nrow(land.area)
+nrow(urb.rur)
+nrow(ag.suit)
+
+nuts3.add.data <- Reduce(function(x,y) merge(x = x, y = y, by = "NUTS_ID", all=T, sort=F), 
+       list(pop.tot, pop.dens, land.area, urb.rur, ag.suit[,c('NUTS_ID', 'mn_ag_suit')]))
+
+head(nuts3.add.data)
+nrow(nuts3.add.data)
+summary(nuts3.add.data)
+
+nuts3.add.data$urb_rur_typ <- factor(nuts3.add.data$urb_rur_typ)
+
+#attach NUTS3 data to subsidies data
+nuts3.subs.final <- merge(final.subs, nuts3.add.data, by='NUTS_ID', all.x=T, all.y=F, sort=F)
+
+names(nuts3.subs.final)
+nrow(nuts3.subs.final)
+summary(nuts3.subs.final)
+
+nuts3.subs.final.ppp <- merge(final.subs.ppp, nuts3.add.data, by='NUTS_ID', all.x=T, all.y=F, sort=F)
+
+names(nuts3.subs.final.ppp)
+nrow(nuts3.subs.final.ppp)
+summary(nuts3.subs.final.ppp)
+
+#repeat for NUTS2
+names(farm.size.uaa)
+names(farm.size.hold)
+names(uaa.tenure)
+names(eurostat.income.subs)
+names(awu.all)
+
+nrow(farm.size.uaa)
+nrow(farm.size.hold)
+nrow(uaa.tenure)
+nrow(eurostat.income.subs)
+nrow(awu.all)
+
+nuts2.add.data <- Reduce(function(x,y) merge(x = x, y = y, by = "NUTS_ID", all=T, sort=F), 
+       list(d1.dbase@data[,c('CNTR_CO','NUTS_ID')], farm.size.uaa, farm.size.hold, uaa.tenure, eurostat.income.subs, awu.all))
+
+head(nuts2.add.data)
+nrow(nuts2.add.data)
+
+```
+
+
+```{r old.new.nuts2.conv}
+
+nuts2.add.data$NUTS_ID #these are 2013 NUTS
+farm.size.uaa$NUTS_ID #these are 2010 NUTS
+farm.size.hold$NUTS_ID #these are 2010 NUTS
+uaa.tenure$NUTS_ID #these are 2010 NUTS
+eurostat.income.subs$NUTS_ID
+awu.all$NUTS_ID
+
+nuts2.add.data[!nuts2.add.data$NUTS_ID %in% farm.size.uaa$NUTS_ID,'NUTS_ID'] #farm size are 2010 NUTS
+
+nuts2.add.data[!nuts2.add.data$NUTS_ID %in% farm.size.hold$NUTS_ID,'NUTS_ID'] #farm size are 2010 NUTS
+
+nuts2.add.data[!nuts2.add.data$NUTS_ID %in% uaa.tenure$NUTS_ID,'NUTS_ID'] #tenure data are 2010 NUTS
+
+nuts2.add.data[!nuts2.add.data$NUTS_ID %in% eurostat.income.subs$NUTS_ID,'NUTS_ID'] #income missing for a lot of BE, CZ, CY, FI, LT, LV, SI
+
+nuts2.add.data[!nuts2.add.data$NUTS_ID %in% awu.all$NUTS_ID,'NUTS_ID'] #DE is NUTS1 and 2006 (DE41, DE42, DED1, DED3), EL, SI, UK are 2010 NUTS
+
+#need to manually convert some NUTS2 - translation from old to new nuts done based on NUTS 2010 - 2013 table here https://ec.europa.eu/eurostat/web/nuts/history 
+
+nuts.convert <- read.csv('NUTS 2010 - NUTS 2013.csv', head=T)
+head(nuts.convert)
+
+summary(nuts2.add.data)
+
+```
+
+
+```{r nuts2.conv.uaa.awu}
+
+#D1 database is 2013 NUTS but farm size data and AWU are 2010 NUTS
+
+(new.nuts <- nuts2.add.data[!nuts2.add.data$NUTS_ID %in% farm.size.uaa$NUTS_ID,'NUTS_ID'])
+
+#CH, MK, ME, TR can be ignored
+#DE have NUTS1 data that will be allocated to NUTS2 based on area
+#EL, SI, FR we will change codes (some boundary shifts will be ignored)
+#UKI1 and UKI2 are split
+
+#start with straight code changes 
+nuts.convert[nuts.convert$Change == 'Code change',1:2]
+names(nuts2.add.data)
+names(nuts2.add.data)[c(3:25,29:33)] #change only UAA, holdings, and AWU
+
+for(e in nuts.convert[nuts.convert$Change == 'Code change','Code.2013']) {
+  nuts2.add.data[nuts2.add.data$NUTS_ID == e,c(3:25,29:33)] <- nuts2.add.data[nuts2.add.data$NUTS_ID == nuts.convert[nuts.convert$Code.2013 == e, 'Code.2010'],c(3:25,29:33)]
+}
+
+#next, change codes for those with boundary shifts (we will ignore the boundary shifts)
+nuts.convert[nuts.convert$Change == 'Boundary shift',1:2]
+(n10 <- as.character(nuts.convert[nuts.convert$Change == 'Boundary shift','Code.2010']))
+n13 <- c("FRA1","SI03","SI04")
+
+for(e in 1:3) {
+  nuts2.add.data[nuts2.add.data$NUTS_ID == n13[e],c(3:25,29:33)] <- nuts2.add.data[nuts2.add.data$NUTS_ID == n10[e],c(3:25,29:33)]
+}
+
+rm(n10)
+rm(n13)
+
+#UK splits
+names(d1.dbase@data)
+
+##UKI1 to UKI3 and UKI4
+(temp.area <- sum(d1.dbase@data[d1.dbase@data$NUTS_ID %in% c('UKI3', 'UKI4') ,'Shap_Ar']))
+
+nuts2.add.data[nuts2.add.data$NUTS_ID == 'UKI3',c(3:25,29:33)] <- nuts2.add.data[nuts2.add.data$NUTS_ID == 'UKI1',c(3:25,29:33)] * (d1.dbase@data[d1.dbase@data$NUTS_ID == 'UKI3','Shap_Ar'] / temp.area)
+
+nuts2.add.data[nuts2.add.data$NUTS_ID == 'UKI4',c(3:25,29:33)] <- nuts2.add.data[nuts2.add.data$NUTS_ID == 'UKI1',c(3:25,29:33)] * (d1.dbase@data[d1.dbase@data$NUTS_ID == 'UKI4','Shap_Ar'] / temp.area)
+
+##UKI2 to UKI5, UKI6 and UKI7
+(temp.area <- sum(d1.dbase@data[d1.dbase@data$NUTS_ID %in% c('UKI5', 'UKI6', 'UKI7') ,'Shap_Ar']))
+
+nuts2.add.data[nuts2.add.data$NUTS_ID == 'UKI5',c(3:25,29:33)] <- nuts2.add.data[nuts2.add.data$NUTS_ID == 'UKI2',c(3:25,29:33)] * (d1.dbase@data[d1.dbase@data$NUTS_ID == 'UKI5','Shap_Ar'] / temp.area)
+
+nuts2.add.data[nuts2.add.data$NUTS_ID == 'UKI6',c(3:25,29:33)] <- nuts2.add.data[nuts2.add.data$NUTS_ID == 'UKI2',c(3:25,29:33)] * (d1.dbase@data[d1.dbase@data$NUTS_ID == 'UKI6','Shap_Ar'] / temp.area)
+
+nuts2.add.data[nuts2.add.data$NUTS_ID == 'UKI7',c(3:25,29:33)] <- nuts2.add.data[nuts2.add.data$NUTS_ID == 'UKI2',c(3:25,29:33)] * (d1.dbase@data[d1.dbase@data$NUTS_ID == 'UKI7','Shap_Ar'] / temp.area)
+
+all.equal(colSums(nuts2.add.data[nuts2.add.data$NUTS_ID %in% c('UKI3', 'UKI4', 'UKI5', 'UKI6', 'UKI7'),c(3:25,29:33)], na.rm=T), colSums(nuts2.add.data[nuts2.add.data$NUTS_ID %in% c('UKI1', 'UKI2'),c(3:25,29:33)], na.rm=T)) #should be true
+
+#DE
+new.nuts[grep('DE', new.nuts)]
+d1.dbase@data[grep('DE', d1.dbase@data$NUTS_ID),'NUTS_ID']
+new.nuts[grep('DE', new.nuts)][!new.nuts[grep('DE', new.nuts)] %in% d1.dbase@data[grep('DE', d1.dbase@data$NUTS_ID),'NUTS_ID']] #exclude these 2006 NUTS1 in DE
+
+(DE.nuts2 <- new.nuts[grep('DE', new.nuts)])
+farm.size.uaa[grep('DE', farm.size.uaa$NUTS_ID),'NUTS_ID']
+farm.size.hold[grep('DE', farm.size.hold$NUTS_ID),'NUTS_ID']
+awu.all[grep('DE', awu.all$NUTS_ID),'NUTS_ID']
+DE.nuts2[c(39:42)]
+
+for(e in DE.nuts2[-c(39:42)]) {
+  temp.area <- sum(d1.dbase@data[grep(substr(e,1,3), d1.dbase@data$NUTS_ID),'Shap_Ar'])
+
+nuts2.add.data[nuts2.add.data$NUTS_ID == e,c(3:25,29:33)] <- nuts2.add.data[nuts2.add.data$NUTS_ID == substr(e,1,3),c(3:25,29:33)] * (d1.dbase@data[d1.dbase@data$NUTS_ID == e,'Shap_Ar'] / temp.area)
+}
+
+all.equal(colSums(nuts2.add.data[nuts2.add.data$NUTS_ID %in% DE.nuts2,c(3:25,29:33)], na.rm=T), colSums(nuts2.add.data[nuts2.add.data$NUTS_ID %in% substr(DE.nuts2,1,3),c(3:25,29:33)], na.rm=T)) #should be true
+
+rm(temp.area)
+
+#check NUTS2 with NA total UAA
+nuts2.add.data[is.na(nuts2.add.data$uaa_ha_TOTAL),'NUTS_ID']
+#we can ignore CH, TR, MK, IS, ME
+#need to check UK, FR, LI
+
+(UK.na <- nuts2.add.data[is.na(nuts2.add.data$uaa_ha_TOTAL),'NUTS_ID'][grep('UK', nuts2.add.data[is.na(nuts2.add.data$uaa_ha_TOTAL),'NUTS_ID'])])
+
+UK.na[UK.na %in% d1.dbase$NUTS_ID]
+
+(FR.na <- nuts2.add.data[is.na(nuts2.add.data$uaa_ha_TOTAL),'NUTS_ID'][grep('FR', nuts2.add.data[is.na(nuts2.add.data$uaa_ha_TOTAL),'NUTS_ID'])])
+
+FR.na[FR.na %in% d1.dbase$NUTS_ID]
+
+(LI.na <- nuts2.add.data[is.na(nuts2.add.data$uaa_ha_TOTAL),'NUTS_ID'][grep('LI', nuts2.add.data[is.na(nuts2.add.data$uaa_ha_TOTAL),'NUTS_ID'])])
+
+#LI has no subsidies data so can ignore
+final.subs[grep(LI.na, final.subs$NUTS_ID),]
+
+#FR has no subsidies data in these outlying regions so can ignore
+final.subs[grep(FR.na[FR.na %in% d1.dbase$NUTS_ID][1], final.subs$NUTS_ID),]
+final.subs[grep(FR.na[FR.na %in% d1.dbase$NUTS_ID][2], final.subs$NUTS_ID),]
+
+#fix UKI1 - now UKI3 and UKI4
+#UAA is confidential in Eurostat table ef_mptenure for 2010 and 2013, we'll use 2007 data
+final.subs[grep(UK.na[UK.na %in% d1.dbase$NUTS_ID][1], final.subs$NUTS_ID),c('NUTS_ID', 'total')]
+final.subs[grep(UK.na[UK.na %in% d1.dbase$NUTS_ID][2], final.subs$NUTS_ID),c('NUTS_ID', 'total')]
+
+var.of.interest <- "ef_mptenure"
+clean_eurostat_cache()
+
+## Download attribute data from Eurostat
+sp.data <- eurostat::get_eurostat(paste(var.of.interest), time_format = "raw", stringsAsFactors = FALSE)
+
+## Filter data - UAA
+sp.data.sub <- sp.data %>%
+  dplyr::filter(geo == 'UKI1') %>%
+  dplyr::filter(time == 2007) %>%
+  dplyr::filter(indic_ef == "AGRAREA_HA")
+head(sp.data.sub)
+
+farm.size.uaa.UKI1 <- cast(sp.data.sub[,-4], geo ~ agrarea, id.var = "geo")
+
+names(farm.size.uaa.UKI1)
+names(farm.size.uaa.UKI1) <- c('NUTS_ID', paste('uaa_ha_', names(farm.size.uaa.UKI1)[-1], sep=''))
+head(farm.size.uaa.UKI1)
+
+## Filter data - Number of holdings
+sp.data.sub <- sp.data %>%
+  dplyr::filter(geo == 'UKI1') %>%
+  dplyr::filter(time == 2007) %>%
+  dplyr::filter(indic_ef == "HOLD_HOLD")
+head(sp.data.sub)
+
+farm.size.hold.UKI1 <- cast(sp.data.sub[,-4], geo ~ agrarea, id.var = "geo")
+
+names(farm.size.hold.UKI1)
+names(farm.size.hold.UKI1) <- c('NUTS_ID', paste('no_holds_', names(farm.size.hold.UKI1)[-1], sep=''))
+head(farm.size.hold.UKI1)
+
+#re-run NUTS 2010 to 2013 conversion for UKI1
+(temp.area <- sum(d1.dbase@data[d1.dbase@data$NUTS_ID %in% c('UKI3', 'UKI4') ,'Shap_Ar']))
+
+nuts2.add.data[nuts2.add.data$NUTS_ID == 'UKI3',names(farm.size.hold.UKI1)[-1]] <- farm.size.uaa.UKI1[,-1] * (d1.dbase@data[d1.dbase@data$NUTS_ID == 'UKI3','Shap_Ar'] / temp.area)
+
+nuts2.add.data[nuts2.add.data$NUTS_ID == 'UKI3',names(farm.size.uaa.UKI1)[-1]] <- farm.size.uaa.UKI1[,-1] * (d1.dbase@data[d1.dbase@data$NUTS_ID == 'UKI3','Shap_Ar'] / temp.area)
+
+nuts2.add.data[nuts2.add.data$NUTS_ID == 'UKI4',names(farm.size.hold.UKI1)[-1]] <- farm.size.hold.UKI1[,-1] * (d1.dbase@data[d1.dbase@data$NUTS_ID == 'UKI4','Shap_Ar'] / temp.area)
+
+nuts2.add.data[nuts2.add.data$NUTS_ID == 'UKI4',names(farm.size.uaa.UKI1)[-1]] <- farm.size.hold.UKI1[,-1] * (d1.dbase@data[d1.dbase@data$NUTS_ID == 'UKI4','Shap_Ar'] / temp.area)
+
+nuts2.add.data[grep('UKI',nuts2.add.data$NUTS_ID),]
+
+#check remaining NAs for farm size and AWU
+nuts2.add.data[nuts2.add.data$NUTS_ID %in% d1.dbase@data$NUTS_ID & is.na(nuts2.add.data$uaa_ha_TOTAL),'NUTS_ID']
+
+nuts2.add.data[nuts2.add.data$NUTS_ID %in% d1.dbase@data$NUTS_ID & is.na(nuts2.add.data$no_holds_TOTAL),'NUTS_ID']
+
+nuts2.add.data[nuts2.add.data$NUTS_ID %in% d1.dbase@data$NUTS_ID & is.na(nuts2.add.data$tot_lab_force_mean),'NUTS_ID']
+
+```
+
+
+```{r nuts2.conv.afi}
+
+(nuts2.na.afi <- nuts2.add.data[nuts2.add.data$NUTS_ID %in% d1.dbase@data$NUTS_ID & is.na(nuts2.add.data$factor_income_mean),'NUTS_ID'])
+
+unique(substr(nuts2.na.afi,1,2)) #we can ignore NO, ME, TR, LI, MK
+
+nuts2.add.data[nuts2.add.data$NUTS_ID %in% substr(nuts2.na.afi,1,2) & is.na(nuts2.add.data$factor_income_mean),'NUTS_ID']
+
+(nuts0.na.afi <- nuts2.add.data[nuts2.add.data$NUTS_ID %in% substr(nuts2.na.afi,1,2) & is.na(nuts2.add.data$factor_income_mean),'NUTS_ID'][c(1:7)]) #the new Eurostat data is missing several countries for which we have already assembled data from Eurostat table "aact_eaa01"
+
+nuts0.factor.in <- read.csv('factor_income_NUTS0_mean_allnuts.csv', head=T)
+
+head(nuts0.factor.in)
+
+#we will assume that AFI per AWU is uniform across NUTS2 within these countries, and will thus allocate AFI by AWU to NUTS2
+
+#first add NUTS0 AFI to dataframe
+nuts2.add.data[nuts2.add.data$NUTS_ID %in% nuts0.na.afi, c('NUTS_ID', 'factor_income_mean', 'tot_lab_force_mean')]
+
+nuts0.factor.in[nuts0.factor.in$geo %in% nuts0.na.afi,] 
+
+for(e in nuts0.na.afi) {
+  nuts2.add.data[nuts2.add.data$NUTS_ID == e & is.na(nuts2.add.data$factor_income_mean), 'factor_income_mean'] <- nuts0.factor.in[nuts0.factor.in$geo == e, 'factor_income_mean']
+}
+
+#add IT manually, it has zeros not NAs
+nuts2.add.data[nuts2.add.data$NUTS_ID == "IT",'factor_income_mean'] <- nuts0.factor.in[nuts0.factor.in$geo == "IT", 'factor_income_mean']
+
+#next, allocate NUTS0 AFI to NUTS2 based on fraction of AWU in each NUTS2
+nuts2.na.afi
+(n2 <- c(unique(substr(nuts2.na.afi,1,2))[c(1,2:5,7:9,11,12)], "IT")) #we ignore outlying FR territories
+
+nuts2.add.data[nuts2.add.data$NUTS_ID %in% n2, c('NUTS_ID', 'factor_income_mean', 'tot_lab_force_mean')]
+
+#BE - for Belgium we use NUTS1 BE2 and BE3 AFI and allocate to NUTS2 by AWU, then we allocate AFI to BE1 based on national average AFI/AWU
+nuts2.add.data[grep("BE", nuts2.add.data$NUTS_ID), c('NUTS_ID', 'factor_income_mean', 'tot_lab_force_mean')]
+
+for(e in c("BE2", "BE3")) {
+  nuts2.add.data[grepl(e, nuts2.add.data$NUTS_ID) & (nuts2.add.data$NUTS_ID %in% d1.dbase@data$NUTS_ID), 'factor_income_mean'] <- (nuts2.add.data[grepl(e, nuts2.add.data$NUTS_ID) & (nuts2.add.data$NUTS_ID %in% d1.dbase@data$NUTS_ID), 'tot_lab_force_mean'] / sum(nuts2.add.data[grepl(e, nuts2.add.data$NUTS_ID) & (nuts2.add.data$NUTS_ID %in% d1.dbase@data$NUTS_ID), 'tot_lab_force_mean'])) * nuts2.add.data[nuts2.add.data$NUTS_ID == e, 'factor_income_mean']
+}
+
+nuts2.add.data[nuts2.add.data$NUTS_ID == "BE10", 'factor_income_mean'] <- (nuts2.add.data[nuts2.add.data$NUTS_ID == "BE", 'factor_income_mean'] / nuts2.add.data[nuts2.add.data$NUTS_ID == "BE", 'tot_lab_force_mean']) * nuts2.add.data[nuts2.add.data$NUTS_ID == "BE10", 'tot_lab_force_mean']
+
+#PL - allocate to NUTS2 based on fraction of AWU
+nuts2.add.data[grep("PL", nuts2.add.data$NUTS_ID), c('NUTS_ID', 'factor_income_mean', 'tot_lab_force_mean')]
+
+nuts2.add.data[grepl("PL", nuts2.add.data$NUTS_ID) & (nuts2.add.data$NUTS_ID %in% d1.dbase@data$NUTS_ID), 'factor_income_mean'] <- (nuts2.add.data[grepl("PL", nuts2.add.data$NUTS_ID) & (nuts2.add.data$NUTS_ID %in% d1.dbase@data$NUTS_ID), 'tot_lab_force_mean'] / nuts2.add.data[nuts2.add.data$NUTS_ID == "PL", 'tot_lab_force_mean']) * nuts2.add.data[nuts2.add.data$NUTS_ID == "PL", 'factor_income_mean']
+
+#IT - allocate to NUTS2 based on fraction of AWU
+nuts2.add.data[grep("IT", nuts2.add.data$NUTS_ID), c('NUTS_ID', 'factor_income_mean', 'tot_lab_force_mean')]
+
+nuts2.add.data[grepl("IT", nuts2.add.data$NUTS_ID) & (nuts2.add.data$NUTS_ID %in% d1.dbase@data$NUTS_ID), 'factor_income_mean'] <- (nuts2.add.data[grepl("IT", nuts2.add.data$NUTS_ID) & (nuts2.add.data$NUTS_ID %in% d1.dbase@data$NUTS_ID), 'tot_lab_force_mean'] / nuts2.add.data[nuts2.add.data$NUTS_ID == "IT", 'tot_lab_force_mean']) * nuts2.add.data[nuts2.add.data$NUTS_ID == "IT", 'factor_income_mean']
+
+#LT, LV, CY, MT, LU - NUTS0 = NUTS2 in these countries, so simply allocate
+nuts2.add.data[grep("LT", nuts2.add.data$NUTS_ID), c('NUTS_ID', 'factor_income_mean', 'tot_lab_force_mean')]
+nuts2.add.data[grep("LV", nuts2.add.data$NUTS_ID), c('NUTS_ID', 'factor_income_mean', 'tot_lab_force_mean')]
+nuts2.add.data[grep("CY", nuts2.add.data$NUTS_ID), c('NUTS_ID', 'factor_income_mean', 'tot_lab_force_mean')]
+nuts2.add.data[grep("MT", nuts2.add.data$NUTS_ID), c('NUTS_ID', 'factor_income_mean', 'tot_lab_force_mean')]
+nuts2.add.data[grep("LU", nuts2.add.data$NUTS_ID), c('NUTS_ID', 'factor_income_mean', 'tot_lab_force_mean')]
+
+for(e in c("LT", "LV", "MT", "CY", "LU")) {
+  nuts2.add.data[nuts2.add.data$NUTS_ID == paste(e, "00", sep=''), 'factor_income_mean'] <- nuts2.add.data[nuts2.add.data$NUTS_ID == e, 'factor_income_mean']
+}
+
+#SI - allocate to NUTS2 based on fraction of AWU
+nuts2.add.data[grep("SI", nuts2.add.data$NUTS_ID), c('NUTS_ID', 'factor_income_mean', 'tot_lab_force_mean')]
+
+nuts2.add.data[grepl("SI", nuts2.add.data$NUTS_ID) & (nuts2.add.data$NUTS_ID %in% d1.dbase@data$NUTS_ID), 'factor_income_mean'] <- (nuts2.add.data[grepl("SI", nuts2.add.data$NUTS_ID) & (nuts2.add.data$NUTS_ID %in% d1.dbase@data$NUTS_ID), 'tot_lab_force_mean'] / nuts2.add.data[nuts2.add.data$NUTS_ID == "SI", 'tot_lab_force_mean']) * nuts2.add.data[nuts2.add.data$NUTS_ID == "SI", 'factor_income_mean']
+
+#CZ - allocate to CZ01 based on national average AFI/AWU
+nuts2.add.data[grep("CZ", nuts2.add.data$NUTS_ID), c('NUTS_ID', 'factor_income_mean', 'tot_lab_force_mean')]
+
+nuts2.add.data[nuts2.add.data$NUTS_ID == "CZ01", 'factor_income_mean'] <- (nuts2.add.data[nuts2.add.data$NUTS_ID == "CZ", 'factor_income_mean'] / nuts2.add.data[nuts2.add.data$NUTS_ID == "CZ", 'tot_lab_force_mean']) * nuts2.add.data[nuts2.add.data$NUTS_ID == "CZ01", 'tot_lab_force_mean']
+
+#FI - for FI1B, FI1C, and FI1D we allocate AFI based on national average AFI/AWU
+nuts2.add.data[grep("FI", nuts2.add.data$NUTS_ID), c('NUTS_ID', 'factor_income_mean', 'tot_lab_force_mean')]
+
+for(e in c("FI1B", "FI1C", "FI1D")) {
+  nuts2.add.data[nuts2.add.data$NUTS_ID == e, 'factor_income_mean'] <- (nuts2.add.data[nuts2.add.data$NUTS_ID == "FI", 'factor_income_mean'] / nuts2.add.data[nuts2.add.data$NUTS_ID == "FI", 'tot_lab_force_mean']) * nuts2.add.data[nuts2.add.data$NUTS_ID == e, 'tot_lab_force_mean']
+}
+
+#check for NUTS2 still without AFI
+nuts2.add.data[nuts2.add.data$NUTS_ID %in% d1.dbase@data$NUTS_ID & is.na(nuts2.add.data$factor_income_mean),'NUTS_ID'] #we can ignore all of these
+
+nuts2.add.data[nuts2.add.data$NUTS_ID %in% d1.dbase@data$NUTS_ID & nuts2.add.data$factor_income_mean == 0,'NUTS_ID']
+
+#Finally, we check UKI1 (UKI3, UKI4) and DE30 as these are outliers when compared to the D1 database afi/awu
+nuts2.add.data[nuts2.add.data$NUTS_ID %in% c("UKI", "UKI1", "UKI3", "UKI4", "DE3", "DE30"),c("NUTS_ID", "factor_income_mean", "tot_lab_force_mean")]
+
+#UKI3 and UKI4 have spurious AFI data for 2013 and 2014 (all UKI NUTS2 have exactly 2.5 for both these years). We will take the values of 0.10 and 0.13 for 2015. This also aligns with the subsidies data for 2015.
+nuts2.add.data[nuts2.add.data$NUTS_ID %in% c("UKI3", "UKI4"),"factor_income_mean"] <- c(0.10, 0.13)
+
+#DE30 looks OK in the Eurostat tables agr_r_accts and ef_olfreg
+
+```
+
+
+```{r nuts2.subs}
+
+#here we sum subsidies within NUTS2 regions and merge with variables available at NUTS2 level (not NUTS3)
+
+#for those countries without postal codes where subsidies were not allocated to a NUTS3 region, the country total is distributed among NUTS2 by UAA
+#this is validated by performing the same exercise on countries for which we have NUTS3 data.
+
+#extract NUTS2 IDs and variables from D1 database
+names(d1.dbase@data)[c(1:2,6:62)]
+
+nuts2.subs.final <- merge(d1.dbase@data[,c(1:2,6:62)], nuts2.add.data[,-2], by='NUTS_ID', all.x=T, sort=F)
+
+head(nuts2.subs.final)
+
+#replace -99999 from D1 database with NA
+nuts2.subs.final[nuts2.subs.final == -99999] <- NA
+
+#sum NUTS3 within NUTS2 - with na.rm=T all NAs become zero but this is OK because we assume NA=no subsidies in the records=0
+names(final.subs)
+names(nuts2.subs.final)
+
+nuts2.subs.final[,names(final.subs[,-c(1:4)])] <- NA #add empty columns for subsidies
+
+for(e in nuts2.subs.final$NUTS_ID) {
+  nuts2.subs.final[nuts2.subs.final$NUTS_ID == e,names(final.subs[,-c(1:4)])] <- colSums(final.subs[grep(e, final.subs$NUTS_ID),-c(1:4)], na.rm=T)
+}
+
+all.equal(
+  colSums(nuts2.subs.final[,names(final.subs[,-c(1:4)])], na.rm=T),
+  colSums(final.subs[-grep('nan', final.subs$NUTS_ID),-c(1:4)], na.rm=T)
+) #should be TRUE
+
+#allocate NUTS2 subsidies from countries without postal codes in records
+(subs.countries <- final.subs[grep('nan', final.subs$NUTS_ID),'CNTR_CODE'])
+
+for(e in subs.countries){
+  for(f in names(final.subs[,-c(1:4)])) {
+    uaa.temp <- sum(nuts2.subs.final[nuts2.subs.final$CNTR_CO == e,'uaa_ha_TOTAL'], na.rm=T)
+    nuts2.subs.final[nuts2.subs.final$CNTR_CO == e,f] <- (nuts2.subs.final[nuts2.subs.final$CNTR_CO == e,'uaa_ha_TOTAL'] / uaa.temp) * final.subs[final.subs$CNTR_CODE == e,f]
+  }
+}
+
+rm(uaa.temp)
+
+all.equal(
+  colSums(nuts2.subs.final[,names(final.subs[,-c(1:4)])], na.rm=T),
+  colSums(final.subs[,-c(1:4)], na.rm=T)
+) #should be TRUE
+
+```
+
+
+```{r nuts2.subs.ppp}
+
+#extract NUTS2 IDs and variables from D1 database
+names(d1.dbase@data)[c(1:2,6:62)]
+
+nuts2.subs.final.ppp <- merge(d1.dbase@data[,c(1:2,6:62)], nuts2.add.data[,-2], by='NUTS_ID', all.x=T, sort=F)
+
+head(nuts2.subs.final.ppp)
+
+#replace -99999 from D1 database with NA
+nuts2.subs.final.ppp[nuts2.subs.final.ppp == -99999] <- NA
+
+#convert AFI to PPP
+ppp #we will use the average rate from 2014-2016
+ppp$mean <- rowMeans(ppp[,2:4])
+
+which(nuts2.subs.final.ppp$NUTS_ID == "LI00") #need to exclude from loop
+
+for(e in nuts2.subs.final.ppp$NUTS_ID[-189]) { #Exclude LI00
+  nuts2.subs.final.ppp[nuts2.subs.final.ppp$NUTS_ID == e,'factor_income_mean'] <- nuts2.add.data[nuts2.add.data$NUTS_ID == e,"factor_income_mean"] * (100 / ppp[ppp$NUTS0== substr(e,1,2),"mean"])
+}
+
+#check
+head(nuts2.subs.final.ppp[,c(1,2,83)], n=20)
+head(nuts2.subs.final[,c(1,2,83)], n=20)
+tail(nuts2.subs.final.ppp[,c(1,2,83)], n=20)
+tail(nuts2.subs.final[,c(1,2,83)], n=20)
+
+nuts2.subs.final.ppp[grep('RO', nuts2.subs.final.ppp$NUTS_ID),c(1,83)]
+nuts2.subs.final[grep('RO', nuts2.subs.final$NUTS_ID),c(1,83)]
+
+#sum NUTS3 within NUTS2 - with na.rm=T all NAs become zero but this is OK because we assume NA=no subsidies in the records=0
+names(final.subs.ppp)
+names(nuts2.subs.final.ppp)
+
+nuts2.subs.final.ppp[,names(final.subs.ppp[,-c(1:4)])] <- NA #add empty columns for subsidies
+
+for(e in nuts2.subs.final.ppp$NUTS_ID) {
+  nuts2.subs.final.ppp[nuts2.subs.final.ppp$NUTS_ID == e,names(final.subs.ppp[,-c(1:4)])] <- colSums(final.subs.ppp[grep(e, final.subs.ppp$NUTS_ID),-c(1:4)], na.rm=T)
+}
+
+all.equal(
+  colSums(nuts2.subs.final.ppp[,names(final.subs.ppp[,-c(1:4)])], na.rm=T),
+  colSums(final.subs.ppp[-grep('nan', final.subs.ppp$NUTS_ID),-c(1:4)], na.rm=T)
+) #should be TRUE
+
+#allocate NUTS2 subsidies from countries without postal codes in records
+(subs.countries <- final.subs.ppp[grep('nan', final.subs.ppp$NUTS_ID),'CNTR_CODE'])
+
+for(e in subs.countries){
+  for(f in names(final.subs.ppp[,-c(1:4)])) {
+    uaa.temp <- sum(nuts2.subs.final.ppp[nuts2.subs.final.ppp$CNTR_CO == e,'uaa_ha_TOTAL'], na.rm=T)
+    nuts2.subs.final.ppp[nuts2.subs.final.ppp$CNTR_CO == e,f] <- (nuts2.subs.final.ppp[nuts2.subs.final.ppp$CNTR_CO == e,'uaa_ha_TOTAL'] / uaa.temp) * final.subs.ppp[final.subs.ppp$CNTR_CODE == e,f]
+  }
+}
+
+rm(uaa.temp)
+
+all.equal(
+  colSums(nuts2.subs.final.ppp[,names(final.subs.ppp[,-c(1:4)])], na.rm=T),
+  colSums(final.subs.ppp[,-c(1:4)], na.rm=T)
+) #should be TRUE
+
+```
+
+
+##NUTS2 validation
+Here we validate the method of allocating subsidies to NUTS2 regions by applying it to those countries for which we have data.
+
+```{r nuts2.validation}
+
+#extract NUTS2 IDs from D1 database
+names(d1.dbase@data)[1:2]
+
+nuts2.subs.valid <- merge(d1.dbase@data[!d1.dbase@data$CNTR_CO %in% subs.countries,1:2], nuts2.add.data[,-2], by='NUTS_ID', all.x=T, sort=F) #exclude those countries without postal code data
+
+head(nuts2.subs.valid)
+
+#sum NUTS3 within NUTS2 - with na.rm=T all NAs become zero but this is OK because we assume NA=no subsidies in the records=0
+names(final.subs)
+names(nuts2.subs.valid)
+
+nuts2.subs.valid[,names(final.subs[,-c(1:4)])] <- NA #add empty columns for subsidies
+
+#allocate NUTS2 subsidies for all countries
+unique(final.subs$CNTR_CODE)
+
+for(e in unique(final.subs$CNTR_CODE)){
+  for(f in names(final.subs[,-c(1:4)])) {
+    uaa.temp <- sum(nuts2.subs.valid[nuts2.subs.valid$CNTR_CO == e,'uaa_ha_TOTAL'], na.rm=T)
+    nuts2.subs.valid[nuts2.subs.valid$CNTR_CO == e,f] <- (nuts2.subs.valid[nuts2.subs.valid$CNTR_CO == e,'uaa_ha_TOTAL'] / uaa.temp) * sum(final.subs[final.subs$CNTR_CODE == e,f], na.rm=T)
+  }
+}
+
+rm(uaa.temp)
+
+all.equal(
+  colSums(nuts2.subs.valid[,names(final.subs[,-c(1:4)])], na.rm=T),
+  colSums(final.subs[!final.subs$CNTR_CODE %in% subs.countries,-c(1:4)], na.rm=T)
+) #should be TRUE
+
+#calculate relative error
+nuts2.error <- data.frame('NUTS_ID' = nuts2.subs.valid$NUTS_ID, 'uaa' = nuts2.subs.valid$uaa_ha_TOTAL, 'pred.tot' = nuts2.subs.valid$total)
+nuts2.error <- merge(nuts2.error[,1:3], nuts2.subs.final[,c('NUTS_ID', 'total')], all.x=T, all.y=F, sort=F)
+
+names(nuts2.error)[4] <- 'obs.tot'
+
+##absolute error
+nuts2.error$pred.obs.diff <- nuts2.error$pred.tot - nuts2.error$obs.tot
+
+mean(abs(nuts2.error$pred.obs.diff), na.rm=T)
+median(abs(nuts2.error$pred.obs.diff), na.rm=T)
+min(nuts2.error$pred.obs.diff, na.rm=T)
+max(nuts2.error$pred.obs.diff, na.rm=T)
+
+##relative error
+nuts2.error[which((abs(nuts2.error$obs.tot) > 0) & (abs(nuts2.error$pred.obs.diff) > 0)),'pred.obs.rel.diff'] <- nuts2.error[which((abs(nuts2.error$obs.tot) > 0) & (abs(nuts2.error$pred.obs.diff) > 0)), 'pred.obs.diff'] / nuts2.error[which((abs(nuts2.error$obs.tot) > 0) & (abs(nuts2.error$pred.obs.diff) > 0)),'obs.tot']
+
+mean(abs(nuts2.error[which((abs(nuts2.error$obs.tot) > 0) & (abs(nuts2.error$pred.obs.diff) > 0)),'pred.obs.rel.diff']))
+
+median(abs(nuts2.error[which((abs(nuts2.error$obs.tot) > 0) & (abs(nuts2.error$pred.obs.diff) > 0)),'pred.obs.rel.diff']))
+
+min(nuts2.error[which((abs(nuts2.error$obs.tot) > 0) & (abs(nuts2.error$pred.obs.diff) > 0)),'pred.obs.rel.diff'])
+
+max(nuts2.error[which((abs(nuts2.error$obs.tot) > 0) & (abs(nuts2.error$pred.obs.diff) > 0)),'pred.obs.rel.diff'])
+
+#explore outliers
+nuts2.error[88:89,] #these have zero UAA but subsidies, we will ignore here and fix in original data
+nuts2.subs.final[nuts2.subs.final$uaa_ha_TOTAL == 0 & !is.na(nuts2.subs.final$uaa_ha_TOTAL), c("NUTS_ID", "uaa_ha_TOTAL")]
+nuts2.subs.final[nuts2.subs.final$uaa_ha_TOTAL == 0 & !is.na(nuts2.subs.final$uaa_ha_TOTAL), "uaa_ha_TOTAL"] <- NA
+
+nuts2.error[abs(nuts2.error$pred.obs.rel.diff) > 0.5 & !is.na(nuts2.error$pred.obs.rel.diff),]
+
+#here we want the fraction of total subsidies that are wrongly over- or under-allocated to a NUTS2 by increasing relative error margins
+error.curve <- data.frame(matrix(nrow=42, ncol=4))
+names(error.curve) <- c("rel_err", "frac_subs", "frac_subs_over", "frac_subs_under")
+
+error.curve[,1] <- c(seq(0.01,0.1,by=0.01), seq(0.15,1,by=0.05), seq(2,15,by=1))
+
+for(e in 1:42) {
+  error.curve[e,3] <- (sum(nuts2.error[nuts2.error$pred.obs.rel.diff >= error.curve[e,1] &  !is.na(nuts2.error$pred.obs.rel.diff),'pred.tot']) - sum(nuts2.error[nuts2.error$pred.obs.rel.diff >= error.curve[e,1] &  !is.na(nuts2.error$pred.obs.rel.diff),'obs.tot'])) / sum(nuts2.error$obs.tot, na.rm=T)
+  
+  error.curve[e,4] <- (sum(nuts2.error[nuts2.error$pred.obs.rel.diff <= 0 - error.curve[e,1] &  !is.na(nuts2.error$pred.obs.rel.diff),'pred.tot']) - sum(nuts2.error[nuts2.error$pred.obs.rel.diff <= 0 - error.curve[e,1] &  !is.na(nuts2.error$pred.obs.rel.diff),'obs.tot'])) / sum(nuts2.error$obs.tot, na.rm=T)
+}
+
+error.curve[,2] <- error.curve[,3] - error.curve[,4]
+
+head(error.curve)
+
+#visualise
+pdf(paste(outwd, "nuts2_subidies_allocation_error_", Sys.Date(), ".pdf", sep=""), paper='A4', height=11)
+par(mfrow=c(3,2))
+plot(nuts2.error$pred.tot ~ nuts2.error$obs.tot, xlab="Obs. subsidies (Eur)", ylab="Pred. subsidies (Eur)")
+abline(0,1)
+
+plot(nuts2.error$pred.obs.rel.diff ~ nuts2.error$uaa, xlab="UAA (hectares)", ylab="Relative error ([Pred. - Obs.] / Obs.)")
+
+plot(log(nuts2.error$pred.obs.rel.diff + 2, 2) ~ log(nuts2.error$uaa, 10), xlab="UAA (log10 hectares)", ylab="Relative error (log2 err.+2)")
+
+plot(log(nuts2.error$pred.obs.rel.diff + 2, 2) ~ log(nuts2.error$obs.tot, 10), xlab="Total NUTS2 subsidies (log10 Eur)", ylab="Relative error (log2 err.+2)")
+
+plot(error.curve[,3] ~ error.curve[,1], ylim=c(-0.1, 0.1), xlim=c(0,5), xlab="Relative error", ylab="Fraction under/over estimated")
+points(error.curve[,1], error.curve[,4])
+polygon(c(0,error.curve[,1],0,error.curve[,1]), c(0,error.curve[,3],0,error.curve[,4]), col='grey')
+
+dev.off()
+
+
+#JPEG
+jpeg(paste(outwd, "nuts2_subidies_allocation_error_", Sys.Date(), ".jpeg", sep=""), units='in', height=10, width=8, res=600)
+par(mfrow=c(3,2))
+plot(nuts2.error$pred.tot ~ nuts2.error$obs.tot, xlab="Obs. subsidies (Eur)", ylab="Pred. subsidies (Eur)")
+abline(0,1)
+
+plot(nuts2.error$pred.obs.rel.diff ~ nuts2.error$uaa, xlab="UAA (hectares)", ylab="Relative error ([Pred. - Obs.] / Obs.)")
+
+plot(log(nuts2.error$pred.obs.rel.diff + 2, 2) ~ log(nuts2.error$uaa, 10), xlab="UAA (log10 hectares)", ylab="Relative error (log2 err.+2)")
+
+plot(log(nuts2.error$pred.obs.rel.diff + 2, 2) ~ log(nuts2.error$obs.tot, 10), xlab="Total NUTS2 subsidies (log10 Eur)", ylab="Relative error (log2 err.+2)")
+
+plot(error.curve[,3] ~ error.curve[,1], ylim=c(-0.1, 0.1), xlim=c(0,5), xlab="Relative error", ylab="Fraction under/over estimated")
+points(error.curve[,1], error.curve[,4])
+polygon(c(0,error.curve[,1],0,error.curve[,1]), c(0,error.curve[,3],0,error.curve[,4]), col='grey')
+
+dev.off()
+
+```
+
+```{r nuts2.valid.plot}
+
+#errors
+mean(abs(nuts2.error$pred.obs.diff), na.rm=T) #MAE
+mean(abs(nuts2.error$pred.obs.rel.diff), na.rm=T) #MRE
+
+#plot
+tiff(paste(outwd, "FigS1_", Sys.Date(), ".tif", sep=""), units='in', height=4, width=4, res=600)
+par(mar=c(4.5,4.5,1,1))
+y = (nuts2.error$pred.tot / 1e9)
+x = (nuts2.error$obs.tot /1e9)
+
+plot(y ~ x, xlab="Observed payments (Billion €)", ylab="Predicted payments (Billion €)", xlim=c(0,2), ylim=c(0,2))
+abline(0,1)
+abline(0.2,1,lty=2)
+abline(-0.2,1,lty=2)
+
+dev.off()
+
+rm(x)
+rm(y)
+
+```
+
+
+#Final calculations
+Here we do final calculations of subsidies, for example, calculating Pillar I and II totals and adjusting based on UAA, population, and agricultural factor income.
+
+For NUTS3 regions, we only have population, total area, agricultural suitability, and urban-rural typology.
+
+For NUTS2 regions, we have many more variables, including agricultural factor income, UAA, type of tenure, and many environmental and social indicators.
+
+```{r pillar.calcs}
+
+#here we sum pillar I and pillar II subsidies
+##categories within which to summarise subsidies can be adjusted in chunk 3 - scheme.categories##
+
+names(nuts3.subs.final)
+names(nuts3.subs.final.ppp)
+
+#Pillar I
+PI.schemes[!PI.schemes %in% names(nuts3.subs.final)] #"II.8" not in final subsidies
+
+nuts3.subs.final$PI_tot <- rowSums(nuts3.subs.final[,names(nuts3.subs.final) %in% PI.schemes], na.rm=T)
+
+nuts3.subs.final.ppp$PI_tot <- rowSums(nuts3.subs.final.ppp[,names(nuts3.subs.final.ppp) %in% PI.schemes], na.rm=T)
+
+#Pillar II
+PII.schemes[!PII.schemes %in% names(nuts3.subs.final)] #all are in final subsidies
+
+nuts3.subs.final$PII_tot <- rowSums(nuts3.subs.final[,names(nuts3.subs.final.ppp) %in% PII.schemes], na.rm=T)
+
+nuts3.subs.final.ppp$PII_tot <- rowSums(nuts3.subs.final.ppp[,names(nuts3.subs.final.ppp) %in% PII.schemes], na.rm=T)
+
+#repeat for NUTS2
+names(nuts2.subs.final)
+names(nuts2.subs.final.ppp)
+
+#Pillar I
+PI.schemes[!PI.schemes %in% names(nuts2.subs.final)] #"II.8" not in final subsidies
+PI.schemes[!PI.schemes %in% names(nuts2.subs.final.ppp)]
+
+nuts2.subs.final$PI_tot <- rowSums(nuts2.subs.final[,names(nuts2.subs.final) %in% PI.schemes], na.rm=T)
+
+nuts2.subs.final.ppp$PI_tot <- rowSums(nuts2.subs.final.ppp[,names(nuts2.subs.final.ppp) %in% PI.schemes], na.rm=T)
+
+#Pillar II
+PII.schemes[!PII.schemes %in% names(nuts2.subs.final)] #all are in final subsidies
+PII.schemes[!PII.schemes %in% names(nuts2.subs.final.ppp)]
+
+nuts2.subs.final$PII_tot <- rowSums(nuts2.subs.final[,names(nuts2.subs.final) %in% PII.schemes], na.rm=T)
+
+nuts2.subs.final.ppp$PII_tot <- rowSums(nuts2.subs.final.ppp[,names(nuts2.subs.final) %in% PII.schemes], na.rm=T)
+
+```
+
+#Data analysis
+
+##NUTS3 Urban-Rural
+```{r urb.rur}
+
+names(nuts3.subs.final)
+
+(urban.rural.subs <- stats::aggregate(nuts3.subs.final[,c("total","PI_tot","PII_tot","Other")], by=list(nuts3.subs.final$urb_rur_typ), FUN=sum, na.rm=T))
+names(urban.rural.subs)[1] <- "Typology"
+
+#add subsidies at Country level to 'no data' row
+nuts3.subs.final[is.na(nuts3.subs.final$urb_rur_typ),c("NUTS_ID","total","PI_tot","PII_tot","Other")]
+
+urban.rural.subs[urban.rural.subs$Typology == 'no data',-1] <- colSums(nuts3.subs.final[is.na(nuts3.subs.final$urb_rur_typ),c("total","PI_tot","PII_tot","Other")], na.rm=T)
+
+urban.rural.subs$plot_order <- c(2,4,1,3)
+
+urban.rural.subs.plot <- urban.rural.subs[order(urban.rural.subs$plot_order),]
+
+#adjust negative for "Other" at country level for plotting
+urban.rural.subs.plot[4,5] <- 0
+
+#check fraction not at country level
+urban.rural.subs[2,2]/sum(urban.rural.subs[,2])
+
+```
+
+
+```{r urb.rur.plot}
+
+jpeg(paste(outwd, "urban-rural_subsidies_", Sys.Date(), ".jpg", sep=""), units='in', height=5, width=4.5, res=600)
+par(mgp=c(2,0.75,0),mar=c(3.5,3.5,1.5,1.5))
+
+barplot(as.matrix(t(urban.rural.subs.plot[,3:5]))/1e9,
+        col=c("#a87234", "#cf9c65", "#e8d0b6"),
+        xaxt="n",
+        ylab="Total CAP payments (Billion €)", 
+        ylim=c(0,25))
+grid(nx=NA, ny=5, lty=1)
+(b<-barplot(as.matrix(t(urban.rural.subs.plot[,3:5]))/1e9, 
+        ylim=c(0,25),
+        col=c("#a87234", "#cf9c65", "#e8d0b6"),
+        border=grey(0.1),
+        xaxt="n",
+        add=T))
+box()
+
+text(x=b, y=-1.8, c("Rural", "Inter-\nmediate", "Urban", "Country-\nlevel data"), xpd=T, cex=1)
+
+legend("topright", legend=c("Pillar unknown", "Pillar II", "Pillar I"), bg="transparent", bty="n", fill=c("#e8d0b6", "#cf9c65", "#a87234"), border=grey(0.1))
+
+dev.off()
+
+#save results for plotting
+write.csv2(urban.rural.subs.plot, paste(outwd, "urban_rural_subs_plot_", Sys.Date(), ".csv", sep=""))
+
+```
+
+
+##NUTS2 Ag factor income
+Here we analyse income support payments against agricultural factor income per AWU.
+
+To analyse income support payments by NUTS2 regions, we take the following subsidies:
+
+- all schemes under Regulation (EC) No 73/2009
+- coupled, decoupled, and redistributive schemes under Regulation (EU) No 1307/2013
+
+- Pillar I greening payments are placed in "Environmental"
+
+IMPORTANT NOTE: EUROSTAT INTERMITTENTLY UPDATES NUTS CODES IN THEIR TABLES. NEW NUTS CODES DO NOT NECESSARILY ALIGN WITH OLDER VERSIONS. HERE WE CORRECT SEVERAL.
+
+```{r nuts2.afi}
+
+#first we need to correct 0 total AWU to NAs to avoid infinites in calculations
+##This applies to ES63 and ES64, we correct both EUR and PPP original dataframes to avoid problems later
+nuts2.subs.final[nuts2.subs.final$tot_lab_force_mean == 0 & !is.na(nuts2.subs.final$tot_lab_force_mean), c("NUTS_ID", "tot_lab_force_mean")]
+
+nuts2.subs.final[nuts2.subs.final$tot_lab_force_mean == 0 & !is.na(nuts2.subs.final$tot_lab_force_mean), "tot_lab_force_mean"] <- NA
+
+nuts2.subs.final.ppp[nuts2.subs.final.ppp$tot_lab_force_mean == 0 & !is.na(nuts2.subs.final.ppp$tot_lab_force_mean), "tot_lab_force_mean"]
+
+nuts2.subs.final.ppp[nuts2.subs.final.ppp$tot_lab_force_mean == 0 & !is.na(nuts2.subs.final.ppp$tot_lab_force_mean), "tot_lab_force_mean"] <- NA
+
+#next we need to add AFI for those NUTS2 that were changed in updated versions of Eurostat
+#raw euros
+(x <- nuts2.subs.final[is.na(nuts2.subs.final$factor_income_mean), c("NUTS_ID", "factor_income_mean")])
+
+afi.old <- read.csv("factor_income_mean.csv", head=T)
+
+(y <- afi.old[afi.old$geo %in% x$NUTS_ID,])
+
+for(e in y$geo) {
+  nuts2.subs.final[nuts2.subs.final$NUTS_ID == e, "factor_income_mean"] <- y[y$geo == e, "factor_income_mean"]
+}
+
+#ppp
+(x <- nuts2.subs.final.ppp[is.na(nuts2.subs.final.ppp$factor_income_mean), c("NUTS_ID", "factor_income_mean")])
+
+(y <- afi.old[afi.old$geo %in% x$NUTS_ID,])
+
+for(e in y$geo[-28]) { #exclude LI00
+  nuts2.subs.final.ppp[nuts2.subs.final.ppp$NUTS_ID == e, "factor_income_mean"] <- y[y$geo == e, "factor_income_mean"] * (100 / ppp[ppp$NUTS0== substr(e,1,2),"mean"])
+}
+
+rm(x)
+rm(y)
+
+#create AFI dataframe
+nuts2.afi <- nuts2.subs.final[nuts2.subs.final$total > 0,names(nuts2.subs.final) %in% c("NUTS_ID", "factor_income_mean", "tot_lab_force_mean", "afi_awu", "uaa_ha_TOTAL", inc.schemes, env.schemes, "total")]
+
+names(nuts2.afi)
+head(nuts2.afi)
+
+nuts2.afi$tot_inc_sup <- rowSums(nuts2.afi[,names(nuts2.afi) %in% inc.schemes], na.rm=T)
+
+nuts2.afi$inc_sup_per_awu <- nuts2.afi$tot_inc_sup / nuts2.afi$tot_lab_force_mean
+
+nuts2.afi$tot_env_sup <- rowSums(nuts2.afi[,names(nuts2.afi) %in% env.schemes], na.rm=T)
+
+nuts2.afi$env_sup_per_awu <- nuts2.afi$tot_env_sup / nuts2.afi$tot_lab_force_mean
+
+summary(nuts2.afi)
+
+#calculate deciles
+afi.deciles.brks <- quantile(nuts2.afi$factor_income_mean, probs = seq(0, 1, 0.1), na.rm = T, names = T, type = 4)
+
+nuts2.afi$afi_decile <- NA
+
+nuts2.afi[!is.na(nuts2.afi$factor_income_mean) & nuts2.afi$factor_income_mean >= afi.deciles.brks[[1]] & nuts2.afi$factor_income_mean <= afi.deciles.brks[[2]],'afi_decile'] <- "D010"
+
+for(e in 2:9) {
+  nuts2.afi[!is.na(nuts2.afi$factor_income_mean) & nuts2.afi$factor_income_mean > afi.deciles.brks[[e]] & nuts2.afi$factor_income_mean <= afi.deciles.brks[[e+1]],'afi_decile'] <- paste("D0", e, "0", sep="")
+}
+
+nuts2.afi[!is.na(nuts2.afi$factor_income_mean) & nuts2.afi$factor_income_mean > afi.deciles.brks[[10]],'afi_decile'] <- "D100"
+
+afi.deciles.plot <- as.data.frame(aggregate(nuts2.afi$factor_income_mean, by=list(nuts2.afi$afi_decile), FUN=sum, na.rm=T))
+
+names(afi.deciles.plot) <- c("AFI_decile", "Total_AFI")
+
+#convert AFI from million euros to euros
+afi.deciles.plot[,"Total_AFI"] <- as.data.frame(aggregate(nuts2.afi$factor_income_mean, by=list(nuts2.afi$afi_decile), FUN=sum, na.rm=T))[[2]] *10^6
+
+afi.deciles.plot$Total_AWU <- aggregate(nuts2.afi$tot_lab_force_mean, by=list(nuts2.afi$afi_decile), FUN=sum, na.rm=T)[[2]]
+
+afi.deciles.plot$Total_inc_sup <- aggregate(nuts2.afi$tot_inc_sup, by=list(nuts2.afi$afi_decile), FUN=sum)[[2]]
+
+afi.deciles.plot$Total_env_sup <- aggregate(nuts2.afi$tot_env_sup, by=list(nuts2.afi$afi_decile), FUN=sum)[[2]]
+
+afi.deciles.plot$Total_subs <- aggregate(nuts2.afi$total, by=list(nuts2.afi$afi_decile), FUN=sum)[[2]]
+
+head(afi.deciles.plot)
+
+afi.deciles.plot$Tot_AFI_per_AWU <- afi.deciles.plot$Total_AFI / afi.deciles.plot$Total_AWU
+
+afi.deciles.plot$Inc_sup_per_awu <- afi.deciles.plot$Total_inc_sup / afi.deciles.plot$Total_AWU
+
+afi.deciles.plot$Env_sup_per_awu <- afi.deciles.plot$Total_env_sup / afi.deciles.plot$Total_AWU
+
+#subtract our total subsidies from AFI because these are accounted for in Eurostat calculation of AFI (although their subsidies values are smaller)
+afi.deciles.plot$AFI_wo_subs <- afi.deciles.plot$Total_AFI - afi.deciles.plot$Total_subs
+
+#subtract income support and environmental subsidies from all subsidies
+afi.deciles.plot$Oth_sup_subs <- afi.deciles.plot$Total_subs - afi.deciles.plot$Total_inc_sup - afi.deciles.plot$Total_env_sup
+
+#calculate per AWU
+afi.deciles.plot$AFI_per_AWU_wo_subs <- afi.deciles.plot$AFI_wo_subs / afi.deciles.plot$Total_AWU
+
+afi.deciles.plot$Oth_subs_per_AWU <- afi.deciles.plot$Oth_sup_subs / afi.deciles.plot$Total_AWU
+
+nuts2.afi[nuts2.afi$afi_decile %in% 'D100','NUTS_ID']
+nuts2.afi[nuts2.afi$afi_decile %in% 'D010','NUTS_ID']
+
+```
+
+
+```{r nuts2.afi.awu}
+
+#first compare D1 database AFI/AWU with Eurostat data downloaded here
+names(nuts2.afi)
+nuts2.afi$eurst_afi_awu <- (10^6 * nuts2.afi$factor_income_mean) / nuts2.afi$tot_lab_force_mean #first convert AFI from million euros to euros
+summary(nuts2.afi$afi_awu)
+summary(nuts2.afi$eurst_afi_awu)
+
+nuts2.afi[,c('NUTS_ID', 'afi_awu', 'eurst_afi_awu')]
+
+#calculate deciles
+afi.awu.deciles.brks <- quantile(nuts2.afi$eurst_afi_awu, probs = seq(0, 1, 0.1), na.rm = T, names = T, type = 4)
+
+hist(nuts2.afi$eurst_afi_awu)
+hist(log(nuts2.afi$eurst_afi_awu,10))
+
+#PL is problematic because it spans the lowest 2 deciles with the same AFI/AWU value in all NUTS2
+
+(dec.01.PL <- nuts2.afi[nuts2.afi$eurst_afi_awu <= afi.awu.deciles.brks[[2]] & nuts2.afi$eurst_afi_awu >= afi.awu.deciles.brks[[1]] & !is.na(nuts2.afi$eurst_afi_awu) & grepl("PL", nuts2.afi$NUTS_ID) ,'NUTS_ID'])
+(dec.01.XX <- nuts2.afi[nuts2.afi$eurst_afi_awu <= afi.awu.deciles.brks[[2]] & nuts2.afi$eurst_afi_awu >= afi.awu.deciles.brks[[1]] & !is.na(nuts2.afi$eurst_afi_awu) & !grepl("PL", nuts2.afi$NUTS_ID) ,'NUTS_ID'])
+
+#we will split PL between the lowest 2 deciles based on PPP per capita in these regions
+names(nuts2.subs.final)[37]
+nuts2.subs.final[grep("PL", nuts2.subs.final$NUTS_ID), c("NUTS_ID", "pps_cap")]
+
+length(dec.01.XX)
+length(dec.01.PL)
+#for some reason PL NUTS2 codes are missing from here, check manually
+#we need to place the lowest 8 PL NUTS2 in the lowest decile
+
+(dec.01.PL.new <- nuts2.subs.final[grep("PL",nuts2.subs.final$NUTS_ID), c("NUTS_ID", "pps_cap")][order(nuts2.subs.final[grep("PL",nuts2.subs.final$NUTS_ID), "pps_cap"]),][1:8,'NUTS_ID'])
+
+(dec.02.PL.new <- nuts2.afi[grepl("PL", nuts2.afi$NUTS_ID) & !nuts2.afi$NUTS_ID %in% dec.01.PL.new, 'NUTS_ID'])
+
+#repeat for IT for 5th and 6th deciles
+afi.awu.deciles.brks
+
+nuts2.afi[!is.na(nuts2.afi$eurst_afi_awu) & nuts2.afi$eurst_afi_awu > afi.awu.deciles.brks[[5]] & nuts2.afi$eurst_afi_awu <= afi.awu.deciles.brks[[6]],'NUTS_ID']
+
+nuts2.afi[!is.na(nuts2.afi$eurst_afi_awu) & nuts2.afi$eurst_afi_awu > afi.awu.deciles.brks[[6]] & nuts2.afi$eurst_afi_awu <= afi.awu.deciles.brks[[7]],'NUTS_ID']
+
+(dec.05.IT <- nuts2.afi[!is.na(nuts2.afi$eurst_afi_awu) & nuts2.afi$eurst_afi_awu > afi.awu.deciles.brks[[5]] & nuts2.afi$eurst_afi_awu <= afi.awu.deciles.brks[[6]] & grepl("IT", nuts2.afi$NUTS_ID) ,'NUTS_ID'])
+
+(dec.06.IT <- nuts2.afi[!is.na(nuts2.afi$eurst_afi_awu) & nuts2.afi$eurst_afi_awu > afi.awu.deciles.brks[[6]] & nuts2.afi$eurst_afi_awu <= afi.awu.deciles.brks[[7]] & grepl("IT", nuts2.afi$NUTS_ID) ,'NUTS_ID'])
+
+length(dec.05.IT)
+length(dec.06.IT)
+#due to floating point precision, some IT regions are already allocated to D06. We will deal with this manually
+
+(dec.05.IT.new <- nuts2.subs.final[grepl("IT", nuts2.subs.final$NUTS_ID) & !nuts2.subs.final$NUTS_ID %in% dec.06.IT, c("NUTS_ID", "pps_cap")][order(nuts2.subs.final[grepl("IT", nuts2.subs.final$NUTS_ID) & !nuts2.subs.final$NUTS_ID %in% dec.06.IT, "pps_cap"]),][1:8,'NUTS_ID'])
+
+(dec.06.IT.new <- nuts2.afi[grepl("IT", nuts2.afi$NUTS_ID) & !nuts2.afi$NUTS_ID %in% dec.05.IT.new & !nuts2.afi$NUTS_ID %in% dec.06.IT,'NUTS_ID'])
+
+#check NA AFI for subsidies
+nuts2.afi[is.na(nuts2.afi$eurst_afi_awu) ,c('NUTS_ID', 'eurst_afi_awu', 'total')] #NOTE: ES63 and ES64 received small amount (around 130k Euros) of subsidies but are not included here due to NA AFI
+
+#allocate NUTS to deciles
+nuts2.afi$afi_awu_decile <- NA
+
+nuts2.afi[!is.na(nuts2.afi$eurst_afi_awu) & nuts2.afi$eurst_afi_awu >= afi.awu.deciles.brks[[1]] & nuts2.afi$eurst_afi_awu <= afi.awu.deciles.brks[[2]],'afi_awu_decile'] <- "D010"
+
+for(e in 2:9) {
+  nuts2.afi[!is.na(nuts2.afi$eurst_afi_awu) & nuts2.afi$eurst_afi_awu > afi.awu.deciles.brks[[e]] & nuts2.afi$eurst_afi_awu <= afi.awu.deciles.brks[[e+1]],'afi_awu_decile'] <- paste("D0", e, "0", sep="")
+}
+
+nuts2.afi[!is.na(nuts2.afi$eurst_afi_awu) & nuts2.afi$eurst_afi_awu > afi.awu.deciles.brks[[10]],'afi_awu_decile'] <- "D100"
+
+#fix deciles 2 (PL), 5 and 6 (IT)
+nuts2.afi[!is.na(nuts2.afi$eurst_afi_awu) & nuts2.afi$NUTS_ID %in% dec.02.PL.new,'afi_awu_decile'] <- "D020"
+
+nuts2.afi[!is.na(nuts2.afi$eurst_afi_awu) & nuts2.afi$NUTS_ID %in% dec.06.IT.new,'afi_awu_decile'] <- "D060"
+
+#check
+for(e in unique(nuts2.afi$afi_awu_decile)) {
+  print(e)
+  print(length(nuts2.afi[nuts2.afi$afi_awu_decile %in% e,'NUTS_ID']))
+}
+
+#nuts2.afi[order(nuts2.afi[,c(26)]),c(1,26,27)]
+
+#calculate variables in NUTS2 within deciles
+afi.awu.deciles.plot <- as.data.frame(aggregate(nuts2.afi$factor_income_mean, by=list(nuts2.afi$afi_awu_decile), FUN=sum))
+
+names(afi.awu.deciles.plot) <- c("AFI_AWU_decile", "Total_AFI")
+
+#convert AFI from million euros to euros
+afi.awu.deciles.plot[,"Total_AFI"] <- as.data.frame(aggregate(nuts2.afi$factor_income_mean, by=list(nuts2.afi$afi_awu_decile), FUN=sum, na.rm=T))[[2]] *10^6
+
+afi.awu.deciles.plot$Total_AWU <- aggregate(nuts2.afi$tot_lab_force_mean, by=list(nuts2.afi$afi_awu_decile), FUN=sum, na.rm=T)[[2]]
+
+afi.awu.deciles.plot$Total_inc_sup <- aggregate(nuts2.afi$tot_inc_sup, by=list(nuts2.afi$afi_awu_decile), FUN=sum)[[2]]
+
+afi.awu.deciles.plot$Total_env_sup <- aggregate(nuts2.afi$tot_env_sup, by=list(nuts2.afi$afi_awu_decile), FUN=sum)[[2]]
+
+afi.awu.deciles.plot$Total_subs <- aggregate(nuts2.afi$total, by=list(nuts2.afi$afi_awu_decile), FUN=sum)[[2]]
+
+head(afi.awu.deciles.plot)
+
+afi.awu.deciles.plot$Tot_AFI_per_AWU <- afi.awu.deciles.plot$Total_AFI / afi.awu.deciles.plot$Total_AWU
+
+afi.awu.deciles.plot$Inc_sup_per_awu <- afi.awu.deciles.plot$Total_inc_sup / afi.awu.deciles.plot$Total_AWU
+
+afi.awu.deciles.plot$Env_sup_per_awu <- afi.awu.deciles.plot$Total_env_sup / afi.awu.deciles.plot$Total_AWU
+
+#subtract our total subsidies from AFI because these are accounted for in Eurostat calculation of AFI (although their subsidies values are smaller)
+afi.awu.deciles.plot$AFI_wo_subs <- afi.awu.deciles.plot$Total_AFI - afi.awu.deciles.plot$Total_subs
+
+#subtract income support and environmental subsidies from all subsidies
+afi.awu.deciles.plot$Oth_sup_subs <- afi.awu.deciles.plot$Total_subs - afi.awu.deciles.plot$Total_inc_sup - afi.awu.deciles.plot$Total_env_sup
+
+#calculate per AWU
+afi.awu.deciles.plot$AFI_per_AWU_wo_subs <- afi.awu.deciles.plot$AFI_wo_subs / afi.awu.deciles.plot$Total_AWU
+
+afi.awu.deciles.plot$Oth_subs_per_AWU <- afi.awu.deciles.plot$Oth_sup_subs / afi.awu.deciles.plot$Total_AWU
+
+nuts2.afi[nuts2.afi$afi_awu_decile %in% 'D100','NUTS_ID']
+nuts2.afi[nuts2.afi$afi_awu_decile %in% 'D010','NUTS_ID']
+
+```
+
+
+```{r nuts2.afi.awu.ppp}
+
+#here we carry out the same analysis but with PPP adjusted Euros
+nuts2.afi.ppp <- nuts2.subs.final.ppp[nuts2.subs.final.ppp$total > 0,names(nuts2.subs.final.ppp) %in% c("NUTS_ID", "factor_income_mean", "tot_lab_force_mean", "uaa_ha_TOTAL", inc.schemes, env.schemes,"total")]
+
+names(nuts2.afi.ppp)
+
+#make calculations
+nuts2.afi.ppp$tot_inc_sup <- rowSums(nuts2.afi.ppp[,names(nuts2.afi.ppp) %in% inc.schemes], na.rm=T)
+
+nuts2.afi.ppp$inc_sup_per_awu <- nuts2.afi.ppp$tot_inc_sup / nuts2.afi.ppp$tot_lab_force_mean
+
+nuts2.afi.ppp$tot_env_sup <- rowSums(nuts2.afi.ppp[,names(nuts2.afi.ppp) %in% env.schemes], na.rm=T)
+
+nuts2.afi.ppp$env_sup_per_awu <- nuts2.afi.ppp$tot_env_sup / nuts2.afi.ppp$tot_lab_force_mean
+
+nuts2.afi.ppp$eurst_afi_awu <- (10^6 * nuts2.afi.ppp$factor_income_mean) / nuts2.afi.ppp$tot_lab_force_mean #first convert AFI from million euros to euros
+
+summary(nuts2.afi.ppp)
+
+#calculate deciles
+afi.ppp.awu.deciles.brks <- quantile(nuts2.afi.ppp$eurst_afi_awu, probs = seq(0, 1, 0.1), na.rm = T, names = T, type = 4)
+
+hist(nuts2.afi.ppp$eurst_afi_awu)
+hist(log(nuts2.afi.ppp$eurst_afi_awu,10))
+
+summary(nuts2.afi.ppp$eurst_afi_awu)
+
+#IT is problematic because it spans the 5th and 6th deciles with the same AFI/AWU value in all NUTS2
+afi.ppp.awu.deciles.brks
+
+nuts2.afi.ppp[!is.na(nuts2.afi.ppp$eurst_afi_awu) & nuts2.afi.ppp$eurst_afi_awu > afi.ppp.awu.deciles.brks[[5]] & nuts2.afi.ppp$eurst_afi_awu <= afi.ppp.awu.deciles.brks[[6]],'NUTS_ID']
+
+nuts2.afi.ppp[!is.na(nuts2.afi.ppp$eurst_afi_awu) & nuts2.afi.ppp$eurst_afi_awu > afi.ppp.awu.deciles.brks[[6]] & nuts2.afi.ppp$eurst_afi_awu <= afi.ppp.awu.deciles.brks[[7]],'NUTS_ID']
+
+(dec.05.IT.ppp <- nuts2.afi.ppp[!is.na(nuts2.afi.ppp$eurst_afi_awu) & nuts2.afi.ppp$eurst_afi_awu > afi.ppp.awu.deciles.brks[[5]] & nuts2.afi.ppp$eurst_afi_awu <= afi.ppp.awu.deciles.brks[[6]] & grepl("IT", nuts2.afi.ppp$NUTS_ID) ,'NUTS_ID'])
+
+(dec.06.IT.ppp <- nuts2.afi.ppp[!is.na(nuts2.afi.ppp$eurst_afi_awu) & nuts2.afi.ppp$eurst_afi_awu > afi.ppp.awu.deciles.brks[[6]] & nuts2.afi.ppp$eurst_afi_awu <= afi.ppp.awu.deciles.brks[[7]] & grepl("IT", nuts2.afi.ppp$NUTS_ID) ,'NUTS_ID'])
+
+length(dec.05.IT.ppp)
+length(dec.06.IT.ppp)
+#due to floating point precision, some IT regions are already allocated to D06. We will deal with this manually
+
+(dec.05.IT.ppp.new <- nuts2.subs.final.ppp[grepl("IT", nuts2.subs.final.ppp$NUTS_ID) & !nuts2.subs.final.ppp$NUTS_ID %in% dec.06.IT.ppp, c("NUTS_ID", "pps_cap")][order(nuts2.subs.final.ppp[grepl("IT", nuts2.subs.final.ppp$NUTS_ID) & !nuts2.subs.final.ppp$NUTS_ID %in% dec.06.IT.ppp, "pps_cap"]),][1:6,'NUTS_ID'])
+
+(dec.06.IT.ppp.new <- nuts2.afi.ppp[grepl("IT", nuts2.afi.ppp$NUTS_ID) & !nuts2.afi.ppp$NUTS_ID %in% dec.05.IT.ppp.new & !nuts2.afi.ppp$NUTS_ID %in% dec.06.IT.ppp,'NUTS_ID'])
+
+#allocate NUTS to deciles
+nuts2.afi.ppp$afi_awu_decile <- NA
+
+nuts2.afi.ppp[!is.na(nuts2.afi.ppp$eurst_afi_awu) & nuts2.afi.ppp$eurst_afi_awu >= afi.ppp.awu.deciles.brks[[1]] & nuts2.afi.ppp$eurst_afi_awu <= afi.ppp.awu.deciles.brks[[2]],'afi_awu_decile'] <- "D010"
+
+for(e in 2:9) {
+  nuts2.afi.ppp[!is.na(nuts2.afi.ppp$eurst_afi_awu) & nuts2.afi.ppp$eurst_afi_awu > afi.ppp.awu.deciles.brks[[e]] & nuts2.afi.ppp$eurst_afi_awu <= afi.ppp.awu.deciles.brks[[e+1]],'afi_awu_decile'] <- paste("D0", e, "0", sep="")
+}
+
+nuts2.afi.ppp[!is.na(nuts2.afi.ppp$eurst_afi_awu) & nuts2.afi.ppp$eurst_afi_awu > afi.ppp.awu.deciles.brks[[10]],'afi_awu_decile'] <- "D100"
+
+#fix deciles 5 and 6 (IT)
+nuts2.afi.ppp[!is.na(nuts2.afi.ppp$eurst_afi_awu) & nuts2.afi.ppp$NUTS_ID %in% dec.06.IT.ppp.new,'afi_awu_decile'] <- "D060"
+
+#check - should be 26 or 27 regions in each decile
+for(e in unique(nuts2.afi.ppp$afi_awu_decile)) {
+  print(e)
+  print(length(nuts2.afi.ppp[nuts2.afi.ppp$afi_awu_decile %in% e,'NUTS_ID']))
+}
+
+#calculate variables in NUTS2 within deciles
+afi.ppp.awu.deciles.plot <- as.data.frame(aggregate(nuts2.afi.ppp$factor_income_mean, by=list(nuts2.afi.ppp$afi_awu_decile), FUN=sum))
+
+names(afi.ppp.awu.deciles.plot) <- c("AFI_AWU_decile", "Total_AFI")
+
+#convert AFI from million euros to euros
+afi.ppp.awu.deciles.plot[,"Total_AFI"] <- as.data.frame(aggregate(nuts2.afi.ppp$factor_income_mean, by=list(nuts2.afi.ppp$afi_awu_decile), FUN=sum, na.rm=T))[[2]] *10^6
+
+afi.ppp.awu.deciles.plot$Total_AWU <- aggregate(nuts2.afi.ppp$tot_lab_force_mean, by=list(nuts2.afi.ppp$afi_awu_decile), FUN=sum, na.rm=T)[[2]]
+
+afi.ppp.awu.deciles.plot$Total_inc_sup <- aggregate(nuts2.afi.ppp$tot_inc_sup, by=list(nuts2.afi.ppp$afi_awu_decile), FUN=sum)[[2]]
+
+afi.ppp.awu.deciles.plot$Total_env_sup <- aggregate(nuts2.afi.ppp$tot_env_sup, by=list(nuts2.afi.ppp$afi_awu_decile), FUN=sum)[[2]]
+
+afi.ppp.awu.deciles.plot$Total_subs <- aggregate(nuts2.afi.ppp$total, by=list(nuts2.afi.ppp$afi_awu_decile), FUN=sum)[[2]]
+
+#add raw Euros income support and non income support subsidies for plotting
+afi.ppp.awu.deciles.plot$RAW_inc_sup <- aggregate(nuts2.afi$tot_inc_sup, by=list(nuts2.afi.ppp$afi_awu_decile), FUN=sum)[[2]]
+
+afi.ppp.awu.deciles.plot$RAW_env_sup <- aggregate(nuts2.afi$tot_env_sup, by=list(nuts2.afi.ppp$afi_awu_decile), FUN=sum)[[2]]
+
+afi.ppp.awu.deciles.plot$RAW_total <- aggregate(nuts2.afi$total, by=list(nuts2.afi.ppp$afi_awu_decile), FUN=sum)[[2]]
+
+head(afi.ppp.awu.deciles.plot)
+
+afi.ppp.awu.deciles.plot$Tot_AFI_per_AWU <- afi.ppp.awu.deciles.plot$Total_AFI / afi.ppp.awu.deciles.plot$Total_AWU
+
+afi.ppp.awu.deciles.plot$Inc_sup_per_awu <- afi.ppp.awu.deciles.plot$Total_inc_sup / afi.ppp.awu.deciles.plot$Total_AWU
+
+afi.ppp.awu.deciles.plot$Env_sup_per_awu <- afi.ppp.awu.deciles.plot$Total_env_sup / afi.ppp.awu.deciles.plot$Total_AWU
+
+#subtract our total subsidies from AFI because these are accounted for in Eurostat calculation of AFI (although their subsidies values are smaller)
+afi.ppp.awu.deciles.plot$AFI_wo_subs <- afi.ppp.awu.deciles.plot$Total_AFI - afi.ppp.awu.deciles.plot$Total_subs
+
+#subtract income support and environmental subsidies from all subsidies
+afi.ppp.awu.deciles.plot$Oth_sup_subs <- afi.ppp.awu.deciles.plot$Total_subs - afi.ppp.awu.deciles.plot$Total_inc_sup - afi.ppp.awu.deciles.plot$Total_env_sup
+
+afi.ppp.awu.deciles.plot$RAW_Oth_sup_subs <- afi.ppp.awu.deciles.plot$RAW_total - afi.ppp.awu.deciles.plot$RAW_inc_sup - afi.ppp.awu.deciles.plot$RAW_env_sup
+
+#calculate per AWU
+afi.ppp.awu.deciles.plot$AFI_per_AWU_wo_subs <- afi.ppp.awu.deciles.plot$AFI_wo_subs / afi.ppp.awu.deciles.plot$Total_AWU
+
+afi.ppp.awu.deciles.plot$Oth_subs_per_AWU <- afi.ppp.awu.deciles.plot$Oth_sup_subs / afi.ppp.awu.deciles.plot$Total_AWU
+
+```
+
+
+```{r final.plot.afi.awu.ppp}
+
+#JPEG - horizontal
+jpeg(paste(outwd, "AFI_PPP_per_AWU_deciles_horizontal_", Sys.Date(), ".jpg", sep=""), units='in', height=5, width=6, res=600)
+par(mgp=c(2,0.75,0),mar=c(3.5,3.5,3.5,1.5), mfrow=c(1,1))
+
+bp1 <- barplot(as.matrix(t(afi.ppp.awu.deciles.plot[,c("AFI_per_AWU_wo_subs", "Oth_subs_per_AWU", "Env_sup_per_awu", "Inc_sup_per_awu")])),
+        horiz=T,
+        col=c(grey(0.5), grey(0.7), grey(0.8), grey(0.9)),
+        cex.names=0.9,
+        #xlab="Regional grouping by income level",
+        xlim=c(0,60000),
+        xlab="Average annual income per person for full-time work (€ in PPS)",
+        cex.lab=1.1,
+        cex=1.1
+        )
+abline(v=c(16138, 4257, 29285), lty=c(2,2,2), col="blue4", lwd=2) #from ilc_di03 for 2015
+text(c(8000,19800,32000),c(0.45,0.45,0.45),c("RO", "EU28","LU"), cex=1.2, col="blue4")
+
+par(new=TRUE)
+plot((afi.ppp.awu.deciles.plot$Total_AWU / 10^6), seq(0.5,9.5,1),
+     type="p",col="dark orange2",axes=FALSE,ann=FALSE, xlim=c(0,3.5), ylim=c(0.1,9.9), pch=23, bg="darkgoldenrod1",cex=1.5)
+axis(3,at=seq(0,3.5,0.5),cex.axis=1.1, col="dark orange", col.axis="dark orange2")
+mtext("Total full-time agricultural workers (Million) in each decile", side = 3, line = 2, cex=1.1, col="dark orange2")
+
+legend("right", legend=c("Income support (Pillar I)", "Environmental payments", "Other payments", "Income without payments"), fill=c(grey(0.9), grey(0.8), grey(0.7), grey(0.5)), cex=1)
+
+dev.off()
+
+```
+
+
+##NUTS2 GHG emissions
+###GHG emissions rate deciles
+Here we group NUTS2 regions into deciles based on GHG emissions rates and calculate environmental subsidies within these deciles. See supplemental information for full list of environmental measures included.
+
+```{r aec.support}
+
+(greening.schemes <- env.schemes[1]) #greening only
+
+(env.clim.schemes <- env.schemes[-1]) #all other environmental excluding greening
+
+(env.clim.grn.schemes <- env.schemes) #all
+
+```
+
+First we will analyse the subsidies to NUTS2 deciles based on GHG emission rates. We will include income variables here also for use below.
+
+```{r nuts2.ghg.rate}
+
+#create a dataframe for analysis excluding "UKI3","UKI4","CH01","ES63","ES64" because of 0 or NA in either emissions, UAA, or AWU
+nuts2.subs.final[nuts2.subs.final$NUTS_ID %in% c("UKI3","UKI4","CH01","ES63","ES64"),c(1,48,69,83,90)]
+
+nuts2.env <- nuts2.subs.final[nuts2.subs.final$total >0 & !nuts2.subs.final$NUTS_ID %in% c("UKI3","UKI4","CH01","ES63","ES64"),names(nuts2.subs.final) %in% c("NUTS_ID", "emi_c2q", "nt2000_p", "nt2000_g", "grsslnd", "sol_lss", "uaa_ha_TOTAL", "factor_income_mean", "tot_lab_force_mean", "cal_frc", greening.schemes, env.clim.schemes, inc.schemes, "total")]
+
+#also create a dataframe with PPP income and subsidies for later comparison
+nuts2.env.ppp <- nuts2.subs.final.ppp[nuts2.subs.final.ppp$total >0 & !nuts2.subs.final$NUTS_ID %in% c("UKI3","UKI4","CH01","ES63","ES64"),names(nuts2.subs.final.ppp) %in% c("NUTS_ID", "factor_income_mean", greening.schemes, env.clim.schemes, inc.schemes, "total")]
+
+names(nuts2.env)
+head(nuts2.env)
+
+#disaggregate subsidy types
+nuts2.env$tot_aec <- rowSums(nuts2.env[,names(nuts2.env) %in% env.clim.schemes], na.rm=T)
+nuts2.env$tot_greening <- nuts2.env[,names(nuts2.env) %in% greening.schemes]
+
+nuts2.env.ppp$tot_aec <- rowSums(nuts2.env.ppp[,names(nuts2.env.ppp) %in% env.clim.schemes], na.rm=T)
+nuts2.env.ppp$tot_greening <- nuts2.env.ppp[,names(nuts2.env.ppp) %in% greening.schemes]
+
+nuts2.env$PI_non_greening <- rowSums(nuts2.env[,names(nuts2.env) %in% inc.schemes], na.rm=T)
+
+nuts2.env.ppp$PI_non_greening <- rowSums(nuts2.env.ppp[,names(nuts2.env.ppp) %in% inc.schemes], na.rm=T)
+
+summary(nuts2.env)
+
+#calculate deciles
+ghg.deciles.brks <- quantile(nuts2.env$emi_c2q, probs = seq(0, 1, 0.1), na.rm = T, names = T, type = 4)
+
+nuts2.env$ghg_decile <- NA
+
+nuts2.env[!is.na(nuts2.env$emi_c2q) & nuts2.env$emi_c2q >= ghg.deciles.brks[[1]] & nuts2.env$emi_c2q <= ghg.deciles.brks[[2]],'ghg_decile'] <- "D010"
+
+for(e in 2:9) {
+  nuts2.env[!is.na(nuts2.env$emi_c2q) & nuts2.env$emi_c2q > ghg.deciles.brks[[e]] & nuts2.env$emi_c2q <= ghg.deciles.brks[[e+1]],'ghg_decile'] <- paste("D0", e, "0", sep="")
+}
+
+nuts2.env[!is.na(nuts2.env$emi_c2q) & nuts2.env$emi_c2q > ghg.deciles.brks[[10]],'ghg_decile'] <- "D100"
+
+#check
+for(e in unique(nuts2.env$ghg_decile)) {
+  print(e)
+  print(length(nuts2.env[nuts2.env$ghg_decile %in% e,'NUTS_ID']))
+}
+
+#calculate variables within deciles
+ghg.deciles.plot <- aggregate(nuts2.env$total, by=list(nuts2.env$ghg_decile), FUN=sum)
+
+names(ghg.deciles.plot) <- c("ghg_decile", "Total_subs")
+
+ghg.deciles.plot$Total_aec <- aggregate(nuts2.env$tot_aec, by=list(nuts2.env$ghg_decile), FUN=sum)[[2]]
+
+ghg.deciles.plot$Total_greening <- aggregate(nuts2.env$tot_greening, by=list(nuts2.env$ghg_decile), FUN=sum, na.rm=T)[[2]]
+
+ghg.deciles.plot$Tot_non_grn_inc_sup <- aggregate(nuts2.env$PI_non_greening, by=list(nuts2.env$ghg_decile), FUN=sum, na.rm=T)[[2]]
+
+ghg.deciles.plot$Tot_other_subs <- ghg.deciles.plot$Total_subs - ghg.deciles.plot$Total_aec - ghg.deciles.plot$Total_greening - ghg.deciles.plot$Tot_non_grn_inc_sup
+
+names(ghg.deciles.plot)
+
+#we will calculate total emissions within deciles, then average rates within deciles
+ghg.deciles.plot$total_co2eq <-  aggregate((nuts2.env$emi_c2q * nuts2.env$uaa_ha_TOTAL), by=list(nuts2.env$ghg_decile), FUN=sum, na.rm=T)[[2]]
+
+ghg.deciles.plot$Total_UAA <-  aggregate( nuts2.env$uaa_ha_TOTAL, by=list(nuts2.env$ghg_decile), FUN=sum, na.rm=T)[[2]]
+
+head(ghg.deciles.plot)
+
+#subtract AEC and greening subsidies from all subsidies
+ghg.deciles.plot$Non_env_subs <- ghg.deciles.plot$Total_subs - ghg.deciles.plot$Total_aec - ghg.deciles.plot$Total_greening
+
+#add greening and AEC subs to total env subs
+ghg.deciles.plot$Grn_AEC_subs <- ghg.deciles.plot$Total_aec + ghg.deciles.plot$Total_greening
+
+#calculate mean emissions per Ha within deciles
+ghg.deciles.plot$mean_co2eq_ha <- ghg.deciles.plot$total_co2eq / ghg.deciles.plot$Total_UAA
+
+#calculate total AFI and AWU per deciles
+#convert AFI from million euros to euros
+ghg.deciles.plot$Total_AFI <- aggregate(nuts2.env$factor_income_mean, by=list(nuts2.env$ghg_decile), FUN=sum, na.rm=T)[[2]] *10^6
+
+ghg.deciles.plot$Total_AWU <- aggregate( nuts2.env$tot_lab_force_mean, by=list(nuts2.env$ghg_decile), FUN=sum, na.rm=T)[[2]]
+
+#subtract our total subsidies from AFI because these are accounted for in Eurostat calculation of AFI (although their subsidies values are smaller)
+ghg.deciles.plot$AFI_wo_subs <- ghg.deciles.plot$Total_AFI - ghg.deciles.plot$Total_subs
+
+#calculate per AWU
+ghg.deciles.plot$AFI_per_AWU_wo_subs <- ghg.deciles.plot$AFI_wo_subs / ghg.deciles.plot$Total_AWU
+
+ghg.deciles.plot$Grn_subs_per_AWU <- ghg.deciles.plot$Total_greening / ghg.deciles.plot$Total_AWU
+
+ghg.deciles.plot$AEC_subs_per_AWU <- ghg.deciles.plot$Total_aec / ghg.deciles.plot$Total_AWU
+
+ghg.deciles.plot$Grn_AEC_subs_per_AWU <- ghg.deciles.plot$Grn_AEC_subs / ghg.deciles.plot$Total_AWU
+
+ghg.deciles.plot$Non_grn_inc_sup_per_AWU <- ghg.deciles.plot$Tot_non_grn_inc_sup / ghg.deciles.plot$Total_AWU
+
+ghg.deciles.plot$Other_subs_per_AWU <- ghg.deciles.plot$Tot_other_subs / ghg.deciles.plot$Total_AWU
+
+names(ghg.deciles.plot)
+
+#calculate average calorie fraction delivered to food system in deciles
+ghg.deciles.plot$mean_cal_frac <- aggregate(nuts2.env$cal_frc, by=list(nuts2.env$ghg_decile), FUN=mean, na.rm=T)[[2]]
+
+```
+
+
+```{r nuts2.ghg.rate.ppp}
+
+#repeat the monetary calculations for PPP corrections
+all.equal(nuts2.env$NUTS_ID, nuts2.env.ppp$NUTS_ID) #should be TRUE
+
+#calculate variables within deciles
+ghg.deciles.plot$Total_subs_ppp <- aggregate(nuts2.env.ppp$total, by=list(nuts2.env$ghg_decile), FUN=sum)[[2]]
+
+ghg.deciles.plot$Total_aec_ppp <- aggregate(nuts2.env.ppp$tot_aec, by=list(nuts2.env$ghg_decile), FUN=sum)[[2]]
+
+ghg.deciles.plot$Total_greening_ppp <- aggregate(nuts2.env.ppp$tot_greening, by=list(nuts2.env$ghg_decile), FUN=sum, na.rm=T)[[2]]
+
+ghg.deciles.plot$Tot_non_grn_inc_sup_ppp <- aggregate(nuts2.env.ppp$PI_non_greening, by=list(nuts2.env$ghg_decile), FUN=sum, na.rm=T)[[2]]
+
+ghg.deciles.plot$Tot_other_subs_ppp <- ghg.deciles.plot$Total_subs_ppp - ghg.deciles.plot$Total_aec_ppp - ghg.deciles.plot$Total_greening_ppp - ghg.deciles.plot$Tot_non_grn_inc_sup_ppp
+
+ghg.deciles.plot$Grn_AEC_subs_ppp <- ghg.deciles.plot$Total_aec_ppp + ghg.deciles.plot$Total_greening_ppp
+
+#calculate total AFI and AWU per deciles
+#convert AFI from million euros to euros
+ghg.deciles.plot$Total_AFI_ppp <- aggregate(nuts2.env.ppp$factor_income_mean, by=list(nuts2.env$ghg_decile), FUN=sum, na.rm=T)[[2]] *10^6
+
+#subtract our total subsidies from AFI because these are accounted for in Eurostat calculation of AFI (although their subsidies values are smaller)
+ghg.deciles.plot$AFI_wo_subs_ppp <- ghg.deciles.plot$Total_AFI_ppp - ghg.deciles.plot$Total_subs_ppp
+
+#calculate per AWU
+ghg.deciles.plot$AFI_per_AWU_wo_subs_ppp <- ghg.deciles.plot$AFI_wo_subs_ppp / ghg.deciles.plot$Total_AWU
+
+ghg.deciles.plot$Grn_subs_per_AWU_ppp <- ghg.deciles.plot$Total_greening_ppp / ghg.deciles.plot$Total_AWU
+
+ghg.deciles.plot$AEC_subs_per_AWU_ppp <- ghg.deciles.plot$Total_aec_ppp / ghg.deciles.plot$Total_AWU
+
+ghg.deciles.plot$Grn_AEC_subs_per_AWU_ppp <- ghg.deciles.plot$Grn_AEC_subs_ppp / ghg.deciles.plot$Total_AWU
+
+ghg.deciles.plot$Non_grn_inc_sup_per_AWU_ppp <- ghg.deciles.plot$Tot_non_grn_inc_sup_ppp / ghg.deciles.plot$Total_AWU
+
+ghg.deciles.plot$Other_subs_per_AWU_ppp <- ghg.deciles.plot$Tot_other_subs_ppp / ghg.deciles.plot$Total_AWU
+
+```
+
+
+```{r final.plot.ghg.rate.ppp}
+
+#JPEG - horizontal
+jpeg(paste(outwd, "GHG_rate_deciles_PPP_subs_horizontal_", Sys.Date(), ".jpg", sep=""), units='in', height=5, width=6, res=600)
+par(mgp=c(2,0.75,0),mar=c(3.5,3.5,3.5,1.5), mfrow=c(1,1))
+
+bp1 <- barplot(as.matrix(t(ghg.deciles.plot[,c("AFI_per_AWU_wo_subs_ppp", "Other_subs_per_AWU_ppp", "Grn_AEC_subs_per_AWU_ppp", "Non_grn_inc_sup_per_AWU_ppp")])),
+        horiz=T,
+        col=c(grey(0.5), grey(0.7), grey(0.8), grey(0.9)),
+        cex.names=0.9,
+        #xlab="Decile by GHG emissions per hectare",
+        xlim=c(0,35000),
+        xlab="Average annual income per person for full-time work (€ in PPS)",
+        cex.lab=1.1,
+        cex=1.1
+        )
+
+par(new=TRUE)
+plot((ghg.deciles.plot$total_co2eq / 10^12), #convert g to Mt 
+     seq(0.5,9.5,1),
+     type="p",col="dark orange2",axes=FALSE,ann=FALSE, 
+     xlim=c(0,55), ylim=c(0.1,9.9), pch=23, bg="darkgoldenrod1",cex=1.5)
+axis(3,at=seq(0,50,10),cex.axis=1.1, col="dark orange2", col.axis="dark orange2")
+mtext("Total GHG emissions (Mil. t CO2-eq per year) from each decile", side = 3, line = 2, cex=1.1, col="dark orange2")
+
+legend(x=27, y=4.98, legend=c("Income support (Pillar I)", "Environmental payments", "Other payments", "Income without payments"), fill=c(grey(0.9), grey(0.8), grey(0.7), grey(0.5)), cex=1)
+
+dev.off()
+
+```
+
+
+##Checking
+
+```{r checking.all.calcs}
+
+#Raw euros
+##total subs
+sum(nuts2.subs.final$total) / 10^9
+sum(nuts2.afi$total) / 10^9
+(sum(afi.awu.deciles.plot$Total_subs) + sum(nuts2.subs.final[nuts2.subs.final$NUTS_ID %in% c("ES63","ES64"),'total'])) / 10^9 #ES63 and ES64 excluded from AFI analysis
+
+(sum(nuts2.env$total) + sum(nuts2.subs.final[nuts2.subs.final$NUTS_ID %in% c("UKI3","UKI4","CH01","ES63","ES64"),'total'])) / 10^9 #UKI3 and UKI4 excluded from GHG analysis, CH01 excluded for NA UAA, ES63 and ES64 excluded for NA AWU
+(sum(ghg.deciles.plot$Total_subs) + sum(nuts2.subs.final[nuts2.subs.final$NUTS_ID %in% c("UKI3","UKI4","CH01","ES63","ES64"),'total'])) / 10^9 
+
+##AFI
+sum(nuts2.subs.final[nuts2.subs.final$NUTS_ID %in% nuts2.afi$NUTS_ID,"factor_income_mean"]) / 10^3
+sum(nuts2.afi$factor_income_mean) / 10^3 + sum(nuts2.subs.final[nuts2.subs.final$NUTS_ID %in% c("ES63","ES64"),'factor_income_mean']) / 10^9
+(sum(afi.awu.deciles.plot$Total_AFI) + sum(nuts2.subs.final[nuts2.subs.final$NUTS_ID %in% c("ES63","ES64"),'factor_income_mean'])) / 10^9 #ES63 and ES64 excluded from AFI analysis
+
+sum(nuts2.subs.final[nuts2.subs.final$NUTS_ID %in% nuts2.env$NUTS_ID,"factor_income_mean"]) / 10^3 #different totals from nuts2.afi because different NUTS2 regions excluded for env analysis
+sum(nuts2.env$factor_income_mean) / 10^3 + sum(nuts2.subs.final[nuts2.subs.final$NUTS_ID %in% c("UKI3","UKI4","CH01","ES63","ES64"),'factor_income_mean']) / 10^9
+
+#PPP adjusted
+##total subs
+sum(nuts2.subs.final.ppp$total) / 10^9
+sum(nuts2.afi.ppp$total) / 10^9
+(sum(afi.ppp.awu.deciles.plot$Total_subs) + sum(nuts2.subs.final.ppp[nuts2.subs.final.ppp$NUTS_ID %in% c("ES63","ES64"),'total'])) / 10^9 #ES63 and ES64 excluded from AFI analysis
+
+(sum(nuts2.env.ppp$total) + sum(nuts2.subs.final.ppp[nuts2.subs.final.ppp$NUTS_ID %in% c("UKI3","UKI4","CH01","ES63","ES64"),'total'])) / 10^9
+
+##AFI
+sum(nuts2.subs.final.ppp[nuts2.subs.final.ppp$NUTS_ID %in% nuts2.afi.ppp$NUTS_ID,"factor_income_mean"]) / 10^3
+sum(nuts2.afi.ppp$factor_income_mean) / 10^3
+(sum(afi.ppp.awu.deciles.plot$Total_AFI) + sum(nuts2.subs.final.ppp[nuts2.subs.final.ppp$NUTS_ID %in% c("ES63","ES64"),'factor_income_mean'])) / 10^9 #ES63 and ES64 excluded from AFI analysis
+
+sum(nuts2.subs.final.ppp[nuts2.subs.final.ppp$NUTS_ID %in% nuts2.env.ppp$NUTS_ID,"factor_income_mean"]) / 10^3 #different totals from nuts2.afi because different NUTS2 regions excluded for env analysis
+sum(nuts2.env.ppp$factor_income_mean) / 10^3 + sum(nuts2.subs.final.ppp[nuts2.subs.final.ppp$NUTS_ID %in% c("UKI3","UKI4","CH01","ES63","ES64"),'factor_income_mean']) / 10^9
+
+```
+
+##NUTS2 Biodiversity
+Here we use area of High Nature Value (HNV) farmland as a fraction of potential area of HNV as an indicator of biodiversity. The HNV farmland data was processed separately in ArcGIS, downloaded from https://www.eea.europa.eu/data-and-maps/data/high-nature-value-farmland on 2020/02/05. Documentation of HNV calculations can be found in Paracchini et al. (2008) here https://publications.jrc.ec.europa.eu/repository/handle/JRC47063. In order to calculate HNV areas as a fraction of potential HNV area (to account for different NUTS2 sizes and areas of agricultural land) we process the 2006 CORINE land cover (CLC) data following Appendix I of Paracchini et al. (2008), with the exception that ‘Permanently irrigated land’ (CLC class 212) was also included as part of agricultural land and no further distinction by member state or climatic zone was conducted. Tables of HNV and potential HNV area by NUTS2 regions were processed using 100m x 100m zonal grids in ArcGIS.
+
+###HNVfarmland
+```{r nuts2.HNVfarmland}
+
+hnva <- read.csv2("nuts2_hnv_stats.csv", head=T)
+hnvp <- read.csv2("nuts2_hnvp_stats.csv", head=T)
+
+head(hnva)
+head(hnvp)
+
+hnv <- merge(hnva[,c(2,6)], hnvp[,c(2,6)], by='NUTS_ID', all=T, sort=F)
+names(hnv)[-1] <- c("hnva", "hnvp")
+hnv$hnv_frac <- hnv$hnva / hnv$hnvp
+head(hnv)
+summary(hnv)
+
+#make infinites zero - UKI3 and UKI4
+hnv[hnv$hnvp == 0,]
+hnv[hnv$hnvp == 0, "hnv_frac"] <- 0
+
+#check NAs
+hnv[is.na(hnv$hnv_frac),] 
+hnv[grep("EL", hnv$NUTS_ID),] #EL (Greece) NUTS have no data in HNV data, some edge effects have occured in the raster zonal statistics; we will make these all NA
+hnv[grep("EL", hnv$NUTS_ID),"hnv_frac"] <- NA
+
+summary(hnv)
+
+#check HNV NUTS and env database NUTS
+hnv$NUTS_ID
+nuts2.env$NUTS_ID
+
+nuts2.env$NUTS_ID[!nuts2.env$NUTS_ID %in% hnv$NUTS_ID] #ES, FR, PT NUTS are outlying territories with no data
+
+nuts2.hnv <- merge(nuts2.env, hnv, by="NUTS_ID", all.x=T, all.y=F, sort=F)
+names(nuts2.hnv)
+
+#calculate number of NUTS2 with data (263) for previous statistics
+nrow(nuts2.hnv[!is.na(nuts2.hnv$hnv_frac),]) #245
+
+#calculate deciles
+grass.deciles.brks <- quantile(nuts2.hnv$hnv_frac, probs = seq(0, 1, 0.1), na.rm = T, names = T, type = 4)
+
+hist(nuts2.hnv$hnv_frac)
+summary(nuts2.hnv$hnv_frac)
+
+nuts2.hnv$hnv_decile <- NA
+
+nuts2.hnv[!is.na(nuts2.hnv$hnv_frac) & nuts2.hnv$hnv_frac >= grass.deciles.brks[[1]] & nuts2.hnv$hnv_frac <= grass.deciles.brks[[2]],'hnv_decile'] <- "D010"
+
+for(e in 2:9) {
+  nuts2.hnv[!is.na(nuts2.hnv$hnv_frac) & nuts2.hnv$hnv_frac > grass.deciles.brks[[e]] & nuts2.hnv$hnv_frac <= grass.deciles.brks[[e+1]],'hnv_decile'] <- paste("D0", e, "0", sep="")
+}
+
+nuts2.hnv[!is.na(nuts2.hnv$hnv_frac) & nuts2.hnv$hnv_frac > grass.deciles.brks[[10]],'hnv_decile'] <- "D100"
+
+#check - should be approx. 25 NUTS per decile
+for(e in unique(nuts2.hnv$hnv_decile)) {
+  print(e)
+  print(length(nuts2.hnv[nuts2.hnv$hnv_decile %in% e,'NUTS_ID']))
+}
+
+#calculate variables within deciles
+grass.deciles.plot <- aggregate(nuts2.hnv$total, by=list(nuts2.hnv$hnv_decile), FUN=sum)
+
+names(grass.deciles.plot) <- c("grass_decile", "Total_subs")
+
+grass.deciles.plot$Total_aec <- aggregate(nuts2.hnv$tot_aec, by=list(nuts2.hnv$hnv_decile), FUN=sum)[[2]]
+
+grass.deciles.plot$Total_greening <- aggregate(nuts2.hnv$tot_greening, by=list(nuts2.hnv$hnv_decile), FUN=sum, na.rm=T)[[2]]
+
+grass.deciles.plot$Tot_non_grn_inc_sup <- aggregate(nuts2.hnv$PI_non_greening, by=list(nuts2.hnv$hnv_decile), FUN=sum, na.rm=T)[[2]]
+
+grass.deciles.plot$Tot_other_subs <- grass.deciles.plot$Total_subs - grass.deciles.plot$Total_aec - grass.deciles.plot$Total_greening - grass.deciles.plot$Tot_non_grn_inc_sup
+
+names(grass.deciles.plot)
+
+#we will calculate the maximum HNV fraction of any NUTS within each decile
+grass.deciles.plot$Max_hnv_frac <- aggregate(nuts2.hnv$hnv_frac, by=list(nuts2.hnv$hnv_decile), FUN=max, na.rm=T)[[2]]
+
+head(grass.deciles.plot)
+
+#subtract AEC and greening subsidies from all subsidies
+grass.deciles.plot$Non_env_subs <- grass.deciles.plot$Total_subs - grass.deciles.plot$Total_aec - grass.deciles.plot$Total_greening
+
+#add greening and AEC for total env subs
+grass.deciles.plot$Grn_AEC_subs <- grass.deciles.plot$Total_aec + grass.deciles.plot$Total_greening
+
+#calculate total AFI and AWU per deciles
+#convert AFI from million euros to euros
+grass.deciles.plot$Total_AFI <- aggregate(nuts2.hnv$factor_income_mean, by=list(nuts2.hnv$hnv_decile), FUN=sum, na.rm=T)[[2]] *10^6
+
+grass.deciles.plot$Total_AWU <- aggregate( nuts2.hnv$tot_lab_force_mean, by=list(nuts2.hnv$hnv_decile), FUN=sum, na.rm=T)[[2]]
+
+```
+
+
+```{r nuts2.HNV.ppp}
+
+nuts2.hnv.ppp <- merge(nuts2.env.ppp, hnv, by="NUTS_ID", all.x=T, all.y=F, sort=F)
+names(nuts2.hnv.ppp)
+
+#repeat the monetary calculations for PPP corrections
+all.equal(nuts2.hnv$NUTS_ID, nuts2.hnv.ppp$NUTS_ID) #should be TRUE
+
+#calculate variables within deciles
+grass.deciles.plot$Total_subs_ppp <- aggregate(nuts2.hnv.ppp$total, by=list(nuts2.hnv$hnv_decile), FUN=sum)[[2]]
+
+grass.deciles.plot$Total_aec_ppp <- aggregate(nuts2.hnv.ppp$tot_aec, by=list(nuts2.hnv$hnv_decile), FUN=sum)[[2]]
+
+grass.deciles.plot$Total_greening_ppp <- aggregate(nuts2.hnv.ppp$tot_greening, by=list(nuts2.hnv$hnv_decile), FUN=sum, na.rm=T)[[2]]
+
+grass.deciles.plot$Tot_non_grn_inc_sup_ppp <- aggregate(nuts2.hnv.ppp$PI_non_greening, by=list(nuts2.hnv$hnv_decile), FUN=sum, na.rm=T)[[2]]
+
+grass.deciles.plot$Tot_other_subs_ppp <- grass.deciles.plot$Total_subs_ppp - grass.deciles.plot$Total_aec_ppp - grass.deciles.plot$Total_greening_ppp - grass.deciles.plot$Tot_non_grn_inc_sup_ppp
+
+#calculate total AFI and AWU per deciles
+#convert AFI from million euros to euros
+grass.deciles.plot$Total_AFI_ppp <- aggregate(nuts2.hnv.ppp$factor_income_mean, by=list(nuts2.hnv$hnv_decile), FUN=sum, na.rm=T)[[2]] *10^6
+
+#subtract our total subsidies from AFI because these are accounted for in Eurostat calculation of AFI (although their subsidies values are smaller)
+grass.deciles.plot$AFI_wo_subs_ppp <- grass.deciles.plot$Total_AFI_ppp - grass.deciles.plot$Total_subs_ppp
+
+#add greening and AEC for total env subs
+grass.deciles.plot$Grn_AEC_ppp <- grass.deciles.plot$Total_aec_ppp + grass.deciles.plot$Total_greening_ppp
+
+#calculate per AWU
+grass.deciles.plot$AFI_per_AWU_wo_subs_ppp <- grass.deciles.plot$AFI_wo_subs_ppp / grass.deciles.plot$Total_AWU
+
+grass.deciles.plot$Grn_subs_per_AWU_ppp <- grass.deciles.plot$Total_greening_ppp / grass.deciles.plot$Total_AWU
+
+grass.deciles.plot$AEC_subs_per_AWU_ppp <- grass.deciles.plot$Total_aec_ppp / grass.deciles.plot$Total_AWU
+
+grass.deciles.plot$Grn_AEC_subs_per_AWU_ppp <- grass.deciles.plot$Grn_AEC_ppp / grass.deciles.plot$Total_AWU
+
+grass.deciles.plot$Non_grn_inc_sup_per_AWU_ppp <- grass.deciles.plot$Tot_non_grn_inc_sup_ppp / grass.deciles.plot$Total_AWU
+
+grass.deciles.plot$Other_subs_per_AWU_ppp <- grass.deciles.plot$Tot_other_subs_ppp / grass.deciles.plot$Total_AWU
+
+```
+
+
+```{r final.plot.HNV.ppp}
+
+#JPEG - horizontal
+jpeg(paste(outwd, "HNV_deciles_PPP_subs_horizontal_", Sys.Date(), ".jpg", sep=""), units='in', height=5, width=6, res=600)
+par(mgp=c(2,0.75,0),mar=c(3.5,3.5,3.5,1.5), mfrow=c(1,1))
+
+bp1 <- barplot(as.matrix(t(grass.deciles.plot[,c("AFI_per_AWU_wo_subs_ppp", "Other_subs_per_AWU_ppp", "Grn_AEC_subs_per_AWU_ppp", "Non_grn_inc_sup_per_AWU_ppp")])),
+        horiz=T,
+        col=c(grey(0.5), grey(0.7), grey(0.8), grey(0.9)),
+        cex.names=0.9,
+        #xlab="Decile by grassland fraction",
+        xlim=c(0,35000),
+        xlab="Average annual income per person for full-time work (€ in PPS)",
+        cex.lab=1.1,
+        cex=1.1
+        )
+
+par(new=TRUE)
+plot((grass.deciles.plot$Max_hnv_frac), seq(0.5,9.5,1),
+     type="p",col="dark orange2",axes=FALSE,ann=FALSE, xlim=c(0,1.1), ylim=c(0.1,9.9), pch=23, bg="darkgoldenrod1",cex=1.5)
+axis(3,at=seq(0,1,0.2),cex.axis=1.1, col="dark orange2", col.axis="dark orange2")
+mtext("Maximum regional HNV fraction within each decile", side = 3, line = 2, cex=1.1, col="dark orange2")
+
+legend(x=0.51, y=6.5, legend=c("Income support (Pillar I)", "Environmental payments", "Other payments", "Income without payments"), fill=c(grey(0.9), grey(0.8), grey(0.7), grey(0.5)), cex=1)
+
+dev.off()
+
+```
+
+##Export decile results
+For plotting total subsidies in each decile, we need:
+- deciles for AFI/AWU (PPS), GHG rates, HNV fraction
+- total
+- non-greening income support
+- environmental payments
+- other subsidies
+These are in raw euro (not PPS).
+
+```{r export.deciles}
+
+env.clim.grn.schemes
+inc.schemes
+
+names(nuts2.afi)
+names(nuts2.afi.ppp) #don't take euros from this
+names(nuts2.hnv) #can take euros from this
+
+all.deciles <- merge(nuts2.afi.ppp[,c("NUTS_ID", "eurst_afi_awu", "afi_awu_decile")], nuts2.hnv[,c("NUTS_ID", "ghg_decile", "hnv_decile", "total", "PI_non_greening", "tot_aec", "tot_greening")], all=T, sort=F)
+
+all.deciles <- merge(all.deciles, nuts2.afi[,c("NUTS_ID", "tot_inc_sup")], all.x=T, sort=F)
+
+head(all.deciles)
+
+sum(all.deciles$total, na.rm=T)
+sum(all.deciles$PI_non_greening, na.rm=T)
+sum(all.deciles$tot_greening, na.rm=T)
+sum(all.deciles[,c("PI_non_greening", "tot_greening")], na.rm=T)
+sum(all.deciles[!is.na(all.deciles$PI_non_greening) , "tot_inc_sup"], na.rm=T) #need to exclude those few rows removed from the ghg/HNV deciles
+sum(all.deciles$tot_aec, na.rm=T)
+
+summary(all.deciles)
+
+#convert NA to 0 for calculations
+x <- all.deciles[,7:10]
+x[is.na(x)] <- 0
+all.deciles[,7:10] <- x
+rm(x)
+
+all.deciles$other_subs <- all.deciles$total - all.deciles$PI_non_greening - all.deciles$tot_aec - all.deciles$tot_greening
+
+all.deciles$grn_aec_subs <- all.deciles$tot_aec + all.deciles$tot_greening
+
+head(all.deciles)
+
+write.csv(all.deciles, paste(outwd, "nuts2_all_deciles_euros_", Sys.Date(), "_decimal.csv", sep=""))
+write.csv2(all.deciles, paste(outwd, "nuts2_all_deciles_euros_", Sys.Date(), ".csv", sep=""))
+
+```
+
+
+```{r all.decile.plot.df}
+
+names(all.deciles)
+
+#make field with AFI/AWU above EU median
+all.deciles$eu_median <- NA
+
+all.deciles[is.na(all.deciles$eurst_afi_awu),] #exclude two NAs
+
+all.deciles[all.deciles$eurst_afi_awu >= 16163 & !is.na(all.deciles$eurst_afi_awu), "eu_median"] <- "above"
+all.deciles[all.deciles$eurst_afi_awu < 16163 & !is.na(all.deciles$eurst_afi_awu), "eu_median"] <- "below"
+
+all.deciles$Inc_sup_bel <- NA
+all.deciles$Inc_sup_abv <- NA
+
+all.deciles[all.deciles$eu_median=="above" & !is.na(all.deciles$eu_median),"Inc_sup_abv"] <- all.deciles[all.deciles$eu_median=="above" & !is.na(all.deciles$eu_median),"tot_inc_sup"]
+
+all.deciles[all.deciles$eu_median=="below" & !is.na(all.deciles$eu_median),"Inc_sup_bel"] <- all.deciles[all.deciles$eu_median=="below" & !is.na(all.deciles$eu_median),"tot_inc_sup"]
+
+#AFI/AWU deciles
+(excess.plots.afi <- data.frame(decile=sort(unique(all.deciles$afi_awu_decile)), Inc_sup_bel=NA, Inc_sup_abv=NA, grn_aec_subs=NA, other_subs=NA))
+
+for(e in 1:4) {
+  v <- c("Inc_sup_bel","Inc_sup_abv","grn_aec_subs","other_subs")[e]
+  excess.plots.afi[,v] <- aggregate(all.deciles[,v], by=list(all.deciles$afi_awu_decile), FUN=sum, na.rm=T)[,2]
+}
+
+#GHG deciles
+(excess.plots.ghg <- data.frame(decile=sort(unique(all.deciles$ghg_decile)), Inc_sup_bel=NA, Inc_sup_abv=NA, grn_aec_subs=NA, other_subs=NA))
+
+for(e in 1:4) {
+  v <- c("Inc_sup_bel","Inc_sup_abv","grn_aec_subs","other_subs")[e]
+  excess.plots.ghg[,v] <- aggregate(all.deciles[,v], by=list(all.deciles$ghg_decile), FUN=sum, na.rm=T)[,2]
+}
+
+#HNV deciles
+(excess.plots.hnv <- data.frame(decile=sort(unique(all.deciles$hnv_decile)), Inc_sup_bel=NA, Inc_sup_abv=NA, grn_aec_subs=NA, other_subs=NA))
+
+for(e in 1:4) {
+  v <- c("Inc_sup_bel","Inc_sup_abv","grn_aec_subs","other_subs")[e]
+  excess.plots.hnv[,v] <- aggregate(all.deciles[,v], by=list(all.deciles$hnv_decile), FUN=sum, na.rm=T)[,2]
+}
+
+```
+
+
+```{r all.decile.plots}
+
+#JPEG
+jpeg(paste(outwd, "excess_spending_", Sys.Date(), ".jpg", sep=""), units='in', height=14, width=7, res=600)
+par(mfrow=c(3,1),mgp=c(2,0.75,0),mar=c(8,7,1.5,1.5))
+
+(b<-barplot(as.matrix(t(excess.plots.afi[,c("other_subs", "grn_aec_subs", "Inc_sup_bel", "Inc_sup_abv")]))/1e9,
+        horiz=F,
+        col=c(grey(0.7), grey(0.8), grey(0.9), "darkred"),
+        ylim=c(0,10),
+        cex.axis=2.5
+        ))
+legend(x=2.5, y=10.5, bty="n", bg="transparent", legend=c("Income support above EU median", "Income support below EU median", "Environmental payments", "Other payments"), fill=c("darkred", grey(0.9), grey(0.8), grey(0.7)), cex=2.2)
+text(0.5,10,"A", xpd=T, cex=3)
+mtext(text="Billion €", side=2, line=3.5, cex=1.7)
+text(x=b-.25, y=-1, paste(seq(10,100,10), "%", sep=""), xpd=T, srt=45, cex=2)
+mtext(text="Income deciles", side=1, line=5.5, cex=1.5)
+
+barplot(as.matrix(t(excess.plots.ghg[,c("other_subs", "grn_aec_subs", "Inc_sup_bel", "Inc_sup_abv")]))/1e9,
+        horiz=F,
+        col=c(grey(0.7), grey(0.8), grey(0.9), "darkred"),
+        ylim=c(0,10),
+        cex.axis=2.5
+        )
+text(0.5,10,"B", xpd=T, cex=3)
+mtext(text="Billion €", side=2, line=3.5, cex=1.7)
+text(x=b-.25, y=-1, paste(seq(10,100,10), "%", sep=""), xpd=T, srt=45, cex=2)
+mtext(text="GHG emissions deciles", side=1, line=5.5, cex=1.5)
+
+barplot(as.matrix(t(excess.plots.hnv[,c("other_subs", "grn_aec_subs", "Inc_sup_bel", "Inc_sup_abv")]))/1e9,
+        horiz=F,
+        col=c(grey(0.7), grey(0.8), grey(0.9), "darkred"),
+        ylim=c(0,10),
+        cex.axis=2.5,
+        xaxt="n"
+        )
+text(0.5,10,"C", xpd=T, cex=3)
+mtext(text="Billion €", side=2, line=3.5, cex=1.7)
+text(x=b-.25, y=-1, paste(seq(10,100,10), "%", sep=""), xpd=T, srt=45, cex=2)
+mtext(text="HNV farmland deciles", side=1, line=5.5, cex=1.5)
+
+dev.off()
+
+```
+
+
+```{r all.decile.plots.horiz}
+
+#JPEG - horizontal
+jpeg(paste(outwd, "excess_spending_", Sys.Date(), "_horizontal.jpg", sep=""), units='in', height=16, width=8, res=600)
+par(mfrow=c(3,1),mgp=c(2,0.75,0),mar=c(6,10,3.5,1.5))
+
+#A
+(b<-barplot(as.matrix(t(excess.plots.afi[,c("other_subs", "grn_aec_subs", "Inc_sup_bel", "Inc_sup_abv")]))/1e9,
+        horiz=T,col=c(grey(0.7), grey(0.8), "lightcoral", "darkred"),
+        xlim=c(0,12.5),
+        axes=F))
+legend(y=8.8, x=6, bty="n", bg="transparent", legend=c("Above EU median", "Below EU median"), fill=c("darkred", "lightcoral"), cex=2.5)
+text(y=8.8, x=6.3, "Income support (Pillar I)", cex=2.5, pos=4, offset=0, font=2)
+legend(y=5.5, x=6, bty="n", bg="transparent", legend=c("Env. payments", "Other payments"), fill=c(grey(0.8), grey(0.7)), cex=2.5)
+text(y=5.5, x=6.3, "Other support", cex=2.5, pos=4, offset=0, font=2)
+
+Axis(side=1, at=seq(0,10,2), labels=F)
+text(y=-1.2, x=seq(0,10,2), seq(0,10,2), xpd=T, cex=2.5)
+mtext(text="Billion €", side=1, line=5, at=5, cex=1.7)
+
+mtext("A", side=3, at=-2, cex=2, font=2)
+text(y=b, x=-0.8, paste(seq(10,100,10), "%", sep=""), xpd=T, cex=2.5)
+mtext(text="Income deciles", side=2, line=6.5, cex=2)
+
+#B
+barplot(as.matrix(t(excess.plots.ghg[,c("other_subs", "grn_aec_subs", "Inc_sup_bel", "Inc_sup_abv")]))/1e9,
+        horiz=T,col=c(grey(0.7), grey(0.8), "lightcoral", "darkred"),
+        xlim=c(0,12.5),
+        axes=F)
+
+Axis(side=1, at=seq(0,10,2), labels=F)
+text(y=-1.2, x=seq(0,10,2), seq(0,10,2), xpd=T, cex=2.5)
+mtext(text="Billion €", side=1, line=5, at=5, cex=1.7)
+
+mtext("B", side=3, at=-2, cex=2, font=2)
+text(y=b, x=-0.8, paste(seq(10,100,10), "%", sep=""), xpd=T, cex=2.5)
+mtext(text="GHG emissions deciles", side=2, line=6.5, cex=2)
+
+#C
+barplot(as.matrix(t(excess.plots.hnv[,c("other_subs", "grn_aec_subs", "Inc_sup_bel", "Inc_sup_abv")]))/1e9,
+        horiz=T,col=c(grey(0.7), grey(0.8), "lightcoral", "darkred"),
+        xlim=c(0,12.5),
+        axes=F)
+
+Axis(side=1, at=seq(0,10,2), labels=F)
+text(y=-1.2, x=seq(0,10,2), seq(0,10,2), xpd=T, cex=2.5)
+mtext(text="Billion €", side=1, line=5, at=5, cex=1.7)
+
+mtext("C", side=3, at=-2, cex=2, font=2)
+text(y=b, x=-0.8, paste(seq(10,100,10), "%", sep=""), xpd=T, cex=2.5)
+mtext(text="HNV farmland deciles", side=2, line=6.5, cex=2)
+
+dev.off()
+
+```
+
+
+#Checking subsidies
+
+```{r checking.all}
+
+names(final.subs)
+
+unique(final.subs$CNTR_CODE)
+
+country.subs.totals <- data.frame('NUTS_ID' = unique(final.subs$CNTR_CODE), 'total' = NA, 'PI' = NA, 'PII' = NA, 'unmatched'=NA)
+
+for(e in country.subs.totals$NUTS_ID) {
+  country.subs.totals[country.subs.totals$NUTS_ID == e, 'total'] <- sum(subs.all.years[grep(e, subs.all.years$NUTS_ID),'total'], na.rm=T)
+}
+
+for(e in unique(substr(subs.all.years$NUTS_ID,1,2))) {
+  country.subs.totals[country.subs.totals$NUTS_ID == e, 'PI'] <- sum(subs.all.years[grep(e, subs.all.years$NUTS_ID),names(subs.all.years) %in% PI.schemes], na.rm=T)
+}
+
+
+for(e in unique(substr(subs.all.years$NUTS_ID,1,2))) {
+  country.subs.totals[country.subs.totals$NUTS_ID == e, 'PII'] <- sum(subs.all.years[grep(e, subs.all.years$NUTS_ID),names(subs.all.years) %in% PII.schemes], na.rm=T)
+}
+
+for(e in country.subs.totals$NUTS_ID) {
+  country.subs.totals[country.subs.totals$NUTS_ID == e, 'unmatched'] <- sum(subs.all.years[grep(e, subs.all.years$NUTS_ID),'Other'], na.rm=T)
+}
+
+#do Greece manually (EL vs. GR)
+
+country.subs.totals[country.subs.totals$NUTS_ID == 'EL', 'total'] <- sum(subs.all.years[grep('GR', subs.all.years$NUTS_ID),'total'], na.rm=T)
+
+country.subs.totals[country.subs.totals$NUTS_ID == 'EL', 'PI'] <- sum(subs.all.years[grep('GR', subs.all.years$NUTS_ID),names(subs.all.years) %in% PI.schemes], na.rm=T)
+
+country.subs.totals[country.subs.totals$NUTS_ID == 'EL', 'PII'] <- sum(subs.all.years[grep('GR', subs.all.years$NUTS_ID),names(subs.all.years) %in% PII.schemes], na.rm=T)
+
+country.subs.totals[country.subs.totals$NUTS_ID == 'EL', 'unmatched'] <- sum(subs.all.years[grep('GR', subs.all.years$NUTS_ID),'Other'], na.rm=T)
+
+country.subs.totals
+
+all.equal(country.subs.totals[,2], rowSums(country.subs.totals[,3:5], na.rm=T)) #should be true
+
+write.csv(country.subs.totals, paste(outwd, "country_subs_checking_", Sys.Date(), "_decimal.csv", sep=""))
+write.csv2(country.subs.totals, paste(outwd, "country_subs_checking_", Sys.Date(), ".csv", sep=""))
+
+```
+
+#Save
+
+```{r save}
+
+save.image(paste(outwd, "NUTS3_CAP_processing_", Sys.Date(), ".RData", sep=""))
+
+```
+
